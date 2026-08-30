@@ -16,8 +16,12 @@ function LoadingScreen() {
 export function ProtectedRoute({ children }: { children: ReactNode }) {
   const { currentUser, candidateData, loading } = useAuth();
   if (loading) return <LoadingScreen />;
-  // Must be logged in AND have a candidate profile
-  if (!currentUser || !candidateData) return <Navigate to="/login" replace />;
+  // Not logged in at all — send to login.
+  if (!currentUser) return <Navigate to="/login" replace />;
+  // Logged in, but the candidate profile fetch (kicked off right after login)
+  // hasn't resolved yet — show a loading state instead of bouncing back to
+  // /login, which would otherwise happen on every fresh sign-in.
+  if (!candidateData) return <LoadingScreen />;
   return <>{children}</>;
 }
 

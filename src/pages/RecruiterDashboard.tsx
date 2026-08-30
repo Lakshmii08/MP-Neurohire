@@ -35,7 +35,7 @@ export default function RecruiterDashboard() {
 
     const fetchRecruiterData = async () => {
       try {
-        const res = await fetch(`/api/admin/recruiter/${currentUser.uid}`);
+        const res = await fetch(`/api/recruiter/${currentUser.uid}`);
         if (res.ok) {
           const data = await res.json();
           if (data.success) {
@@ -67,7 +67,7 @@ export default function RecruiterDashboard() {
             setInterviews(sessions);
           } else {
             // Fetch SQLite DB candidates
-            const candRes = await fetch('/api/admin/candidates');
+            const candRes = await fetch('/api/candidates');
             if (candRes.ok) {
               const dbCandidates = await candRes.json();
               if (Array.isArray(dbCandidates) && dbCandidates.length > 0) {
