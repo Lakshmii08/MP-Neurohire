@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { generateInterviewQuestions, analyzeSpeech, type InterviewQuestion, type SpeechAnalysisResult } from "@/lib/gemini";
+import { generateInterviewQuestions, analyzeSpeechFromAudio, type InterviewQuestion, type SpeechAnalysisResult } from "@/lib/gemini";
 import { createInterviewSession, updateInterviewSession, saveProctoringEvent, type InterviewAnswer } from "@/lib/firestore";
 import { toast } from "sonner";
 
@@ -105,6 +105,7 @@ export default function InterviewScreen() {
   const audioChunksRef = useRef<Blob[]>([]);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [voiceMatchScores, setVoiceMatchScores] = useState<number[]>([]);
+  const confidenceSamplesRef = useRef<number[]>([]);
 
   // ── Load questions ──────────────────────────────────────────────────
   useEffect(() => {
@@ -239,6 +240,7 @@ export default function InterviewScreen() {
 
       // Update live metrics based on Speech API confidence
       if (count > 0) {
+        confidenceSamplesRef.current.push(avgConfidence / count);
         const conf = Math.round((avgConfidence / count) * 100);
         setLiveMetrics({
           confidence: conf,
@@ -319,7 +321,16 @@ export default function InterviewScreen() {
         }
       }
 
-      const speechAnalysis = await analyzeSpeech(fullAnswer, question);
+      const confSamples = confidenceSamplesRef.current;
+      const avgSttConfidence = confSamples.length > 0
+        ? confSamples.reduce((a, b) => a + b, 0) / confSamples.length
+        : 0.5;
+      const speechAnalysis = await analyzeSpeechFromAudio(
+        currentBlob || new Blob([], { type: 'audio/webm' }),
+        fullAnswer,
+        question,
+        avgSttConfidence
+      );
 
       const newAnswer: InterviewAnswer = { question, transcript: fullAnswer, speechAnalysis };
       const allAnswers = [...answers, newAnswer];
@@ -332,6 +343,7 @@ export default function InterviewScreen() {
         setInterimTranscript("");
         setLiveMetrics({ confidence: 0, fluency: 0, clarity: 0 });
         audioChunksRef.current = [];
+        confidenceSamplesRef.current = [];
         setAudioBlob(null);
         setProcessingAnswer(false);
       } else {

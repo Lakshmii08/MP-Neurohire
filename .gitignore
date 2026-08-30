@@ -6,4 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
-package-lock.zip 
+package-lock.zip
+__pycache__/
+*.pyc

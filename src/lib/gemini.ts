@@ -176,43 +176,70 @@ export async function generateInterviewQuestions(role: string, skills: string[])
   }
 }
 
-export async function analyzeSpeech(transcript: string, question: string): Promise<SpeechAnalysisResult> {
+// Real, non-static speech analysis: sends the actual answer audio + transcript
+// to our backend, which runs it through the ECAPA-TDNN confidence classifier
+// (trained on synthetic_dataset) plus genuine acoustic/transcript features.
+// See server/routes/interviews.js -> python_ml_service/app.py's /analyze-speech.
+export async function analyzeSpeechFromAudio(
+  audioBlob: Blob,
+  transcript: string,
+  question: string,
+  avgSpeechRecognitionConfidence: number
+): Promise<SpeechAnalysisResult> {
   try {
-    const ai = getAI();
-    
-    const prompt = `Analyze this interview answer.
-    Question: ${question}
-    Answer: ${transcript}
-    
-    Respond ONLY with JSON:
-    {
-      "confidence": 0-100,
-      "fluency": 0-100,
-      "clarity": 0-100,
-      "keywords": ["key1", ...],
-      "score": 0-100,
-      "feedback": "1-sentence feedback"
-    }`;
+    const formData = new FormData();
+    formData.append('answer_audio', audioBlob, 'answer.webm');
+    formData.append('transcript', transcript);
+    formData.append('question', question);
 
-    const result = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt
-    });
-    const text = result.text;
-    const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    return { ...JSON.parse(cleaned), transcript };
-  } catch (error) {
-    console.error('Gemini Speech Analysis Error:', error);
+    const res = await fetch('/api/interviews/analyze-speech', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.message || 'Speech analysis failed.');
+
     return {
       transcript,
-      confidence: 85,
-      fluency: 80,
-      clarity: 90,
-      keywords: ["Logic", "Experience", "Clarity"],
-      score: 82,
-      feedback: "Great energy and clear articulation of thoughts."
+      confidence: data.confidence,
+      fluency: data.fluency,
+      clarity: data.clarity,
+      score: data.score,
+      keywords: data.keywords || [],
+      feedback: data.feedback || '',
     };
+  } catch (error) {
+    console.error('Speech analysis service unavailable, using transcript-only heuristic:', error);
+    // No audio ML available — fall back to a heuristic computed purely from
+    // real signals we still have (transcript + live browser STT confidence),
+    // never a fixed literal, so scores still vary answer-to-answer.
+    return transcriptOnlySpeechHeuristic(transcript, avgSpeechRecognitionConfidence);
   }
+}
+
+function transcriptOnlySpeechHeuristic(transcript: string, avgConfidence: number): SpeechAnalysisResult {
+  const words = (transcript.trim().match(/[a-zA-Z']+/g) || []);
+  const wordCount = words.length;
+  const fillerWords = new Set(['um', 'uh', 'umm', 'uhh', 'like', 'actually', 'basically', 'literally']);
+  const fillerCount = words.filter(w => fillerWords.has(w.toLowerCase())).length;
+  const uniqueRatio = wordCount > 0 ? new Set(words.map(w => w.toLowerCase())).size / wordCount : 0;
+  const fillerRatio = wordCount > 0 ? fillerCount / wordCount : 0;
+
+  const baseConfidence = Math.round(Math.max(0, Math.min(100, avgConfidence * 100)));
+  const clarity = Math.round(Math.max(0, Math.min(100, uniqueRatio * 100 - fillerRatio * 50)));
+  const fluency = wordCount === 0
+    ? 0
+    : Math.round(Math.max(0, Math.min(100, 100 - fillerRatio * 200 - Math.max(0, 5 - wordCount) * 10)));
+  const score = Math.round(baseConfidence * 0.4 + clarity * 0.3 + fluency * 0.3);
+
+  return {
+    transcript,
+    confidence: baseConfidence,
+    fluency,
+    clarity,
+    score,
+    keywords: Array.from(new Set(words.filter(w => w.length > 5))).slice(0, 5),
+    feedback: wordCount === 0
+      ? 'No speech was transcribed for this answer.'
+      : `Transcript-only estimate (speech ML service unavailable): ${wordCount} words, ${fillerCount} filler word(s) detected.`
+  };
 }
 
 function getMockResumeAnalysis(): ResumeAnalysisResult {

@@ -159,4 +159,52 @@ router.post('/verify-interview-voice', upload.single('audio_chunk'), async (req,
   }
 });
 
+// ── Real speech analysis (fluency / clarity / confidence) ──────────────────
+// Proxies to the Python ECAPA-TDNN ML service's /analyze-speech endpoint,
+// which combines a confidence classifier (trained on synthetic_dataset) with
+// genuine acoustic + transcript features. Never fabricates scores: on ML
+// service failure this returns an error rather than static numbers, so the
+// caller can fall back to its own transcript-only heuristic.
+router.post('/analyze-speech', upload.single('answer_audio'), async (req, res) => {
+  const { transcript, question } = req.body;
+  const audio_path = req.file ? req.file.path : null;
+
+  if (!audio_path) {
+    return res.status(400).json({ success: false, message: 'No answer audio provided.' });
+  }
+
+  try {
+    const formData = new FormData();
+    const audioBuffer = fs.readFileSync(audio_path);
+    formData.append('file', new Blob([audioBuffer]), 'answer.webm');
+    formData.append('transcript', transcript || '');
+    formData.append('question', question || '');
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 20000);
+    const mlRes = await fetch('http://127.0.0.1:8000/analyze-speech', {
+      method: 'POST',
+      body: formData,
+      signal: ctrl.signal
+    });
+    clearTimeout(timer);
+
+    const data = await mlRes.json();
+    if (!mlRes.ok || !data.success) {
+      return res.status(503).json({ success: false, message: data.detail || 'Speech analysis service error.' });
+    }
+    res.json(data);
+  } catch (error) {
+    console.error('analyze-speech error:', error.message || error);
+    res.status(503).json({
+      success: false,
+      message: 'Speech analysis ML service is offline or failed to process the audio.'
+    });
+  } finally {
+    if (audio_path && fs.existsSync(audio_path)) {
+      try { fs.unlinkSync(audio_path); } catch (e) { /* ignore */ }
+    }
+  }
+});
+
 export default router;
