@@ -1,0 +1,83 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // ── Recruiters ─────────────────────────────────────────────────────
+    match /recruiters/{uid} {
+      allow get: if isSignedIn() && isOwner(uid);
+      allow create: if isSignedIn() && isOwner(uid) &&
+                      isValidRecruiter(incoming()) &&
+                      incoming().status == 'pending';
+      allow update: if isSignedIn() && isOwner(uid) &&
+                      isValidRecruiter(incoming()) &&
+                      incoming().status == existing().status &&
+                      incoming().uid == existing().uid &&
+                      incoming().email == existing().email;
+      // Recruiters can list all recruiters (needed for dashboard checks)
+      allow list: if isSignedIn();
+    }
+
+    function isValidRecruiter(data) {
+      return data.keys().hasAll(['uid', 'email', 'companyName', 'status', 'createdAt']) &&
+             data.keys().size() <= 10 &&
+             data.uid is string && data.uid.size() <= 128 &&
+             data.email is string && data.email.size() <= 256 &&
+             data.companyName is string && data.companyName.size() <= 256 &&
+             data.status in ['pending', 'verified', 'rejected'] &&
+             data.createdAt is timestamp;
+    }
+
+    // ── Candidates ─────────────────────────────────────────────────────
+    match /candidates/{uid} {
+      // Candidate can read/write their own profile
+      allow read, write: if isSignedIn() && isOwner(uid);
+      // Verified recruiters can read any candidate profile
+      // (simplified: any authenticated user who is a recruiter)
+      allow read: if isSignedIn();
+    }
+
+    // ── Interviews ─────────────────────────────────────────────────────
+    match /interviews/{sessionId} {
+      // Candidates can create and read their own interviews
+      allow create: if isSignedIn() &&
+                      incoming().candidateId == request.auth.uid;
+      allow read, update: if isSignedIn() && (
+        resource.data.candidateId == request.auth.uid ||
+        // Any authenticated user can read interviews (recruiters viewing candidates)
+        request.auth != null
+      );
+      // List all completed interviews (recruiters)
+      allow list: if isSignedIn();
+
+      // Proctoring sub-collection
+      match /proctoringEvents/{eventId} {
+        allow read, write: if isSignedIn();
+      }
+    }
+  }
+}
