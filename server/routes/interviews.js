@@ -101,6 +101,36 @@ router.post('/result', (req, res) => {
   }
 });
 
+// Persists a single proctoring event (e.g. a tab switch) to the database the
+// moment it happens, rather than waiting for the interview to finish. Without
+// this, an interview that's abandoned mid-way (tab-switched away and never
+// returned, browser closed) leaves zero record of the violations that
+// happened — they only reached the DB bundled into the final /result call.
+router.post('/proctor-event', (req, res) => {
+  const { user_id, session_id, event, type, severity, tab_switching } = req.body;
+
+  if (!user_id || !session_id) {
+    return res.status(400).json({ success: false, message: 'user_id and session_id are required.' });
+  }
+
+  try {
+    db.prepare(`INSERT INTO proctor_logs
+      (user_id, session_id, event, time, type, severity, tab_switching)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+      user_id,
+      session_id,
+      event || 'Tab Switch Detected',
+      new Date().toLocaleTimeString(),
+      type || 'Proctor',
+      severity || 'warning',
+      tab_switching ? 1 : 0
+    );
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 router.post('/verify-interview-voice', upload.single('audio_chunk'), async (req, res) => {
   const { user_id, session_id } = req.body;
   const audio_chunk_path = req.file ? req.file.path : null;
