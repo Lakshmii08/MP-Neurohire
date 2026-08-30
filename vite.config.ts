@@ -31,7 +31,11 @@ export default defineConfig(({mode}) => {
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
-      watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      // Backend runtime files (sqlite DB + uploads) are excluded so DB writes during
+      // API calls don't trigger a full-page reload and wipe client-side auth state.
+      watch: process.env.DISABLE_HMR === 'true' ? null : {
+        ignored: ['**/server/database.sqlite*', '**/uploads/**'],
+      },
     },
   };
 });

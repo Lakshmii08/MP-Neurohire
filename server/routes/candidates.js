@@ -61,11 +61,10 @@ Please generate a baseline/generic analysis for a candidate applying for the ${c
 Note in the summary that the resume text could not be extracted automatically.`;
     }
 
-    // Call Gemini to perform full dynamic resume analysis
+    // Call Gemini to perform full dynamic resume analysis (falls back to local
+    // NLP extraction below when no key is configured or the API call fails)
     const API_KEY = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
-    if (!API_KEY) throw new Error("GEMINI_API_KEY is not set on the backend.");
-    
-    const ai = new GoogleGenAI({ apiKey: API_KEY });
+    const ai = API_KEY ? new GoogleGenAI({ apiKey: API_KEY }) : null;
 
     const prompt = `You are an expert ATS (Applicant Tracking System) and technical recruiter AI.
 Analyze the following resume for a ${candidate.role_applied || 'Candidate'} position.
@@ -320,17 +319,22 @@ function parseResumeTextDynamically(text, role = 'Software Engineer') {
 }
 
     let aiResult;
-    try {
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: prompt
-      });
-      const cleaned = response.text?.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      aiResult = JSON.parse(cleaned);
-    } catch (aiErr) {
-      console.error("Gemini Error:", aiErr.message || aiErr);
-      console.warn("Performing dynamic NLP extraction on candidate PDF text...");
+    if (!ai) {
+      console.warn("GEMINI_API_KEY not configured — performing dynamic NLP extraction on candidate PDF text...");
       aiResult = parseResumeTextDynamically(extractedText, candidate.role_applied);
+    } else {
+      try {
+        const response = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: prompt
+        });
+        const cleaned = response.text?.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        aiResult = JSON.parse(cleaned);
+      } catch (aiErr) {
+        console.error("Gemini Error:", aiErr.message || aiErr);
+        console.warn("Performing dynamic NLP extraction on candidate PDF text...");
+        aiResult = parseResumeTextDynamically(extractedText, candidate.role_applied);
+      }
     }
 
     db.prepare('UPDATE candidates SET resume_path = ?, resume_text = ?, score = ? WHERE user_id = ?')
@@ -481,7 +485,7 @@ router.get('/matches/:userId', (req, res) => {
   try {
     const candidate = db.prepare('SELECT * FROM candidates WHERE user_id = ?').get(req.params.userId);
     if (!candidate) {
-      const jobs = db.prepare('SELECT * FROM jobs WHERE status = "Open"').all();
+      const jobs = db.prepare("SELECT * FROM jobs WHERE status = 'Open'").all();
       return res.json(computeJobMatches(jobs, [], '', 75));
     }
     
@@ -498,7 +502,7 @@ router.get('/matches/:userId', (req, res) => {
       if (analysis.ats_score) atsScore = analysis.ats_score;
     }
 
-    const jobs = db.prepare('SELECT * FROM jobs WHERE status = "Open"').all();
+    const jobs = db.prepare("SELECT * FROM jobs WHERE status = 'Open'").all();
     const matches = computeJobMatches(jobs, extractedSkills, candidate.role_applied, atsScore);
     res.json(matches);
   } catch (error) {
@@ -510,7 +514,7 @@ router.get('/matches/:userId', (req, res) => {
 router.post('/suggested-jobs', (req, res) => {
   try {
     const { skills, candidateRole, atsScore } = req.body;
-    const jobs = db.prepare('SELECT * FROM jobs WHERE status = "Open"').all();
+    const jobs = db.prepare("SELECT * FROM jobs WHERE status = 'Open'").all();
     const matches = computeJobMatches(jobs, skills || [], candidateRole || '', atsScore || 75);
     res.json({ success: true, suggestedJobs: matches });
   } catch (error) {
