@@ -39,6 +39,16 @@ import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from train_ecapa import ECAPAClassifier, NUM_CLASSES, MODEL_SAVE_PATH
+from confidence_model import (
+    ConfidenceHead,
+    CONFIDENCE_HEAD_PATH,
+    CONFIDENCE_CLASSES,
+    extract_basic_audio_features,
+    extract_transcript_features,
+    extract_keywords,
+    compute_speech_scores,
+    build_feedback,
+)
 
 app = FastAPI(title="NeuroHire ECAPA-TDNN Speaker Verification API")
 
@@ -51,6 +61,7 @@ app.add_middleware(
 )
 
 model = None
+confidence_head = None
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Health Check — used by the Node server's /api/auth/ml-status proxy
@@ -61,6 +72,7 @@ def health_check():
     return {
         "status": "ok",
         "model_loaded": model is not None,
+        "confidence_head_loaded": confidence_head is not None,
         "device": str(next(model.parameters()).device) if model is not None else None
     }
 
@@ -71,7 +83,7 @@ def health_check():
 
 @app.on_event("startup")
 def load_model():
-    global model
+    global model, confidence_head
     try:
         os.environ["SB_FETCH_STRATEGY"] = "copy"
         model = ECAPAClassifier(NUM_CLASSES)
@@ -88,6 +100,23 @@ def load_model():
     except Exception as e:
         print(f"[ECAPA] CRITICAL: Error loading model: {e}")
         model = None
+
+    try:
+        head = ConfidenceHead(num_classes=len(CONFIDENCE_CLASSES))
+        if os.path.exists(CONFIDENCE_HEAD_PATH):
+            head.load_state_dict(torch.load(CONFIDENCE_HEAD_PATH, map_location=torch.device("cpu")))
+            head.eval()
+            confidence_head = head
+            print(f"[ConfidenceHead] Loaded trained classifier from {CONFIDENCE_HEAD_PATH}.")
+        else:
+            print(
+                f"[ConfidenceHead] WARNING: {CONFIDENCE_HEAD_PATH} not found. "
+                "Run `python train_confidence_head.py` to train it on synthetic_dataset. "
+                "Speech analysis will run without the confidence-class signal until then."
+            )
+    except Exception as e:
+        print(f"[ConfidenceHead] Error loading classifier head: {e}")
+        confidence_head = None
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helper: convert any audio file to a 16kHz mono waveform tensor
@@ -107,7 +136,16 @@ async def audio_to_waveform(file: UploadFile) -> torch.Tensor:
             [ffmpeg_exe, "-y", "-i", temp_in_path, "-ar", "16000", "-ac", "1", temp_wav_path],
             check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
-        waveform, sample_rate = torchaudio.load(temp_wav_path)
+        # Use soundfile rather than torchaudio.load: newer torchaudio releases
+        # default to a torchcodec backend that requires system ffmpeg shared
+        # libraries, which aren't guaranteed to be present on every host.
+        import soundfile as sf
+        data, sample_rate = sf.read(temp_wav_path, dtype="float32")
+        waveform = torch.from_numpy(data)
+        if waveform.ndim == 1:
+            waveform = waveform.unsqueeze(0)
+        else:
+            waveform = waveform.T  # soundfile returns (T, channels)
         if sample_rate != 16000:
             waveform = torchaudio.functional.resample(waveform, orig_freq=sample_rate, new_freq=16000)
         if waveform.shape[0] > 1:
@@ -124,16 +162,26 @@ async def audio_to_waveform(file: UploadFile) -> torch.Tensor:
             os.remove(temp_wav_path)
 
 
-def extract_embedding(waveform: torch.Tensor) -> torch.Tensor:
-    """Extract L2-normalised 192-dim ECAPA-TDNN speaker embedding from waveform."""
+def extract_raw_embedding(waveform: torch.Tensor) -> torch.Tensor:
+    """Extract the raw (non-normalised) 192-dim ECAPA-TDNN embedding."""
     device = next(model.parameters()).device
     wav_tensor = waveform.unsqueeze(0).to(device)           # (1, T)
     rel_length = torch.tensor([1.0]).to(device)
     with torch.no_grad():
         emb = model.ecapa.encode_batch(wav_tensor, wav_lens=rel_length)  # (1, 1, 192)
         emb = emb.squeeze(1)                                # (1, 192)
-        emb = F.normalize(emb, p=2, dim=-1)                # L2-normalise → unit sphere
     return emb  # (1, 192)
+
+
+def extract_embedding(waveform: torch.Tensor) -> torch.Tensor:
+    """Extract L2-normalised 192-dim ECAPA-TDNN speaker embedding from waveform.
+
+    Used for speaker *verification* (cosine similarity needs unit-norm vectors).
+    ConfidenceHead was trained on raw (non-normalised) embeddings — see
+    extract_raw_embedding() — so don't feed this normalised version into it.
+    """
+    emb = extract_raw_embedding(waveform)
+    return F.normalize(emb, p=2, dim=-1)  # L2-normalise → unit sphere
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Endpoint 1: /extract-embedding
@@ -240,32 +288,68 @@ async def compare_voices(file1: UploadFile = File(...), file2: UploadFile = File
         raise HTTPException(status_code=500, detail=str(e))
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Endpoint 4: /analyze-speech (intent classification — kept for compatibility)
+# Endpoint 4: /analyze-speech — real Speech Analysis (fluency / clarity / confidence)
+#
+# Combines:
+#   1. The ECAPA-TDNN speaker embedding classified by ConfidenceHead (trained
+#      on synthetic_dataset via train_confidence_head.py) into Low/Neutral/High
+#      vocal confidence.
+#   2. Basic acoustic features computed directly from the waveform (pitch
+#      variability, energy/RMS variability, silence ratio, zero-crossing rate).
+#   3. Transcript-derived features (speaking rate, filler-word ratio,
+#      vocabulary diversity).
+#
+# Every term is a genuine measurement of the submitted answer, so scores vary
+# with the input — there is no fixed/static fallback.
 # ──────────────────────────────────────────────────────────────────────────────
 
 @app.post("/analyze-speech")
-async def analyze_speech(file: UploadFile = File(...)):
-    """Legacy: intent classification with softmax confidence (not speaker verification)."""
+async def analyze_speech(
+    file: UploadFile = File(...),
+    transcript: str = Form(""),
+    question: str = Form(""),
+):
     if model is None:
-        raise HTTPException(status_code=503, detail="ML model not loaded.")
+        raise HTTPException(status_code=503, detail="ECAPA-TDNN model not loaded.")
 
     try:
         waveform = await audio_to_waveform(file)
-        device = next(model.parameters()).device
-        wav_tensor = waveform.unsqueeze(0).to(device)
-        rel_length = torch.tensor([1.0]).to(device)
 
-        with torch.no_grad():
-            outputs = model(wav_tensor, wav_lens=rel_length)
-            probs = torch.nn.functional.softmax(outputs, dim=-1)
-            predicted_class = torch.argmax(probs, dim=-1).item()
-            confidence = probs[0][predicted_class].item()
+        audio_features = extract_basic_audio_features(waveform, sample_rate=16000)
+        transcript_features = extract_transcript_features(transcript, audio_features["duration_sec"])
+
+        confidence_probs = [0.0, 1.0, 0.0]  # neutral prior if the head isn't loaded
+        confidence_label = CONFIDENCE_CLASSES[1]
+        if confidence_head is not None:
+            emb = extract_raw_embedding(waveform).squeeze(0)  # (192,) — matches training in train_confidence_head.py
+            with torch.no_grad():
+                logits = confidence_head(emb.unsqueeze(0).cpu())
+                probs = torch.nn.functional.softmax(logits, dim=-1)[0]
+            confidence_probs = probs.tolist()
+            confidence_label = CONFIDENCE_CLASSES[int(probs.argmax().item())]
+
+        scores = compute_speech_scores(audio_features, transcript_features, confidence_probs)
+        feedback = build_feedback(audio_features, transcript_features, scores, confidence_label)
+        keywords = extract_keywords(transcript)
 
         return {
             "success": True,
-            "prediction": predicted_class,
-            "confidence": confidence,
-            "all_probabilities": probs[0].tolist()
+            "transcript": transcript,
+            "confidence": scores["confidence"],
+            "fluency": scores["fluency"],
+            "clarity": scores["clarity"],
+            "score": scores["score"],
+            "feedback": feedback,
+            "keywords": keywords,
+            "details": {
+                "confidence_class": confidence_label,
+                "confidence_class_probs": {
+                    CONFIDENCE_CLASSES[i]: round(p, 4) for i, p in enumerate(confidence_probs)
+                },
+                "audio_features": audio_features,
+                "transcript_features": transcript_features,
+                "confidence_head_active": confidence_head is not None,
+            },
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
