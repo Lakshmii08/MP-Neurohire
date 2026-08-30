@@ -86,6 +86,11 @@ export default function RecruiterAuth() {
 
     setLoading(true);
     try {
+      const trimmedWebsite = companyWebsite.trim();
+      const normalizedWebsite = trimmedWebsite
+        ? (/^https?:\/\//i.test(trimmedWebsite) ? trimmedWebsite : `https://${trimmedWebsite}`)
+        : "https://neurohire.com";
+
       const res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -95,7 +100,7 @@ export default function RecruiterAuth() {
           company_name: companyName,
           company_size: companySize || "100-500 Units",
           scale_factor: companySize || "100-500 Units",
-          website: companyWebsite || "https://neurohire.com",
+          website: normalizedWebsite,
           recruiter_name: recruiterName || companyName,
           role: "recruiter"
         })
@@ -166,7 +171,8 @@ export default function RecruiterAuth() {
                     className="h-13 pl-12 bg-white/5 border-white/10 text-slate-100 placeholder:text-slate-600 rounded-2xl focus-visible:ring-blue-500/50" 
                   />
                 </div>
-                <Button 
+                <Button
+                  type="submit"
                   disabled={loading}
                   className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold h-13 rounded-2xl shadow-lg shadow-blue-600/20 transition-all text-xs uppercase tracking-widest mt-2"
                 >
@@ -221,13 +227,13 @@ export default function RecruiterAuth() {
                 </div>
                 <div className="relative group">
                   <Globe className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500 group-focus-within:text-purple-500 transition-colors" />
-                  <Input 
-                    required 
-                    type="url" 
-                    placeholder="Corporate Website (e.g. https://acmetech.com)" 
+                  <Input
+                    required
+                    type="text"
+                    placeholder="Corporate Website (e.g. https://acmetech.com or acmetech.com)"
                     value={companyWebsite}
                     onChange={(e) => setCompanyWebsite(e.target.value)}
-                    className="h-12 pl-12 bg-white/5 border-white/10 text-slate-100 rounded-xl focus-visible:ring-purple-500/50" 
+                    className="h-12 pl-12 bg-white/5 border-white/10 text-slate-100 rounded-xl focus-visible:ring-purple-500/50"
                   />
                 </div>
                 <div className="relative group">
@@ -283,7 +289,8 @@ export default function RecruiterAuth() {
                 <span>Instant Enterprise Activation: Your organization and verified scale factor are immediately recorded in the database.</span>
               </div>
 
-              <Button 
+              <Button
+                type="submit"
                 disabled={loading}
                 className="w-full bg-gradient-to-r from-blue-600 via-purple-600 to-cyan-500 hover:opacity-90 text-white font-bold h-13 rounded-2xl shadow-xl shadow-blue-600/30 transition-all text-xs uppercase tracking-widest"
               >
