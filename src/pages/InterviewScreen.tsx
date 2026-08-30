@@ -106,6 +106,7 @@ export default function InterviewScreen() {
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [voiceMatchScores, setVoiceMatchScores] = useState<number[]>([]);
   const confidenceSamplesRef = useRef<number[]>([]);
+  const voiceMismatchCountRef = useRef(0);
 
   // ── Load questions ──────────────────────────────────────────────────
   useEffect(() => {
@@ -309,8 +310,20 @@ export default function InterviewScreen() {
             currentVoiceScores.push(simScore);
             
             if (!vData.match) {
-               toast.error(`🚨 SECURITY ALERT: Voice Mismatch Detected! (${simScore}% match)`, { duration: 5000 });
-               setTabSwitchCount(prev => prev + 2); // Penalize proctoring score by treating as severe violation
+               voiceMismatchCountRef.current += 1;
+               // A single mismatch on one answer is treated as a possible false
+               // reject (short/noisy clips make speaker verification inherently
+               // imperfect — see VOICE_MATCH_THRESHOLD in app.py) rather than an
+               // immediate security event. Only escalate once mismatches repeat
+               // across multiple answers, which is a much stronger signal of an
+               // actual identity mismatch.
+               if (voiceMismatchCountRef.current >= 2) {
+                 toast.error(`🚨 SECURITY ALERT: Repeated Voice Mismatch Detected! (${simScore}% match)`, { duration: 5000 });
+                 setTabSwitchCount(prev => prev + 2); // Penalize proctoring score by treating as severe violation
+               } else {
+                 console.warn(`Voice mismatch on one answer (${simScore}% match) — awaiting confirmation on a later answer before flagging.`);
+                 toast.warning(`Voice match lower than expected on this answer (${simScore}%). Continuing.`);
+               }
             } else {
                toast.success(`Voice Authenticated (${simScore}% match)`);
             }

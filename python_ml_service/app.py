@@ -64,6 +64,42 @@ model = None
 confidence_head = None
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Speaker-verification match threshold — empirically calibrated.
+#
+# The previous threshold (0.70 on the mapped 0-1 scale, i.e. raw cosine 0.40)
+# was a real bug, not a tuning nitpick: calibrate_voice_threshold.py measured
+# it accepting ~100% of *different*-speaker pairs as a "match" using a
+# controlled multi-voice test set (8 synthetic voices x 5 utterances each).
+# Genuine (same-speaker) pairs measured ~0.76-0.94 raw cosine while
+# different-speaker pairs measured ~0.49-0.97 — the two distributions overlap
+# heavily for short single-utterance clips, and 0.40 sits nowhere near where
+# real separation happens. There is no threshold in this calibration that
+# gives both a low false-accept rate (FAR) and a low false-reject rate (FRR)
+# at the same time — short, single-utterance speaker verification with a
+# generic (not fine-tuned) pretrained model is a genuinely hard operating
+# point. See calibrate_voice_threshold.py's full FAR/FRR sweep.
+#
+# This value (raw cosine ~0.84) is this calibration's measured equal-error
+# point (FAR ~= FRR ~= 18-20% in that worst-case synthetic-voice test) — the
+# mathematically balanced operating point, not an arbitrary pick. Pushing
+# higher (tested up to raw 0.86) does cut FAR further but pushes FRR to ~29%,
+# which empirically started rejecting genuine same-speaker verification
+# attempts too — not an acceptable tradeoff for a feature real users hit on
+# every interview answer. This is still a large, deliberate move from the
+# previous ~100% FAR this app was shipping before. Real distinct human voices
+# may separate better than same-TTS-engine synthetic voices, so real-world
+# numbers could beat this worst-case estimate — but the actual reported bug
+# (two different real people scoring as a match) is evidence this synthetic
+# calibration isn't too far off. Re-run calibrate_voice_threshold.py (ideally
+# with real recordings from multiple people via CUSTOM_AUDIO_DIR) to refine
+# this further as real usage data becomes available.
+VOICE_MATCH_THRESHOLD = 0.92  # mapped scale; raw cosine ~0.84
+
+# Verification/enrollment clips shorter than this produce unreliable
+# embeddings — reject rather than silently return an unreliable score.
+MIN_VERIFICATION_DURATION_SEC = 1.5
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Health Check — used by the Node server's /api/auth/ml-status proxy
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -200,12 +236,21 @@ async def extract_embedding_endpoint(file: UploadFile = File(...)):
 
     try:
         waveform = await audio_to_waveform(file)
+        duration_sec = waveform.shape[-1] / 16000.0
+        if duration_sec < MIN_VERIFICATION_DURATION_SEC:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Enrollment audio too short ({duration_sec:.1f}s). "
+                       f"Need at least {MIN_VERIFICATION_DURATION_SEC}s of clear speech."
+            )
         emb = extract_embedding(waveform)
         return {
             "success": True,
             "embedding": emb[0].tolist(),   # list of 192 floats
             "embedding_dim": emb.shape[-1]
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -224,7 +269,7 @@ async def verify_with_embedding(
     """
     Interview step: compare new audio against the stored ECAPA embedding.
     Cosine similarity on the unit-sphere equals the dot product (both are L2-normalised).
-    Threshold: similarity >= 0.70 is considered a match.
+    See VOICE_MATCH_THRESHOLD above for how the match threshold was chosen.
     """
     if model is None:
         raise HTTPException(status_code=503, detail="ECAPA-TDNN model not loaded.")
@@ -238,6 +283,13 @@ async def verify_with_embedding(
 
         # Extract embedding from new audio
         waveform = await audio_to_waveform(file)
+        duration_sec = waveform.shape[-1] / 16000.0
+        if duration_sec < MIN_VERIFICATION_DURATION_SEC:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Audio too short ({duration_sec:.1f}s) for reliable speaker verification. "
+                       f"Need at least {MIN_VERIFICATION_DURATION_SEC}s of speech."
+            )
         test_emb = extract_embedding(waveform).to(device)  # (1, 192)
 
         # Cosine similarity (both are L2-normalised, so this equals dot product)
@@ -246,14 +298,15 @@ async def verify_with_embedding(
         # Clamp to [0, 1] for cleaner score display
         similarity_clamped = max(0.0, min(1.0, (similarity + 1.0) / 2.0))
 
-        THRESHOLD = 0.70
         return {
             "success": True,
             "similarity_score": similarity_clamped,         # 0-1 range
             "raw_cosine": similarity,                       # raw value for debugging
-            "match": similarity_clamped >= THRESHOLD,
-            "threshold": THRESHOLD
+            "match": similarity_clamped >= VOICE_MATCH_THRESHOLD,
+            "threshold": VOICE_MATCH_THRESHOLD
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -272,6 +325,14 @@ async def compare_voices(file1: UploadFile = File(...), file2: UploadFile = File
         wav1 = await audio_to_waveform(file1)
         wav2 = await audio_to_waveform(file2)
 
+        for wav in (wav1, wav2):
+            if wav.shape[-1] / 16000.0 < MIN_VERIFICATION_DURATION_SEC:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Audio too short for reliable speaker verification. "
+                           f"Need at least {MIN_VERIFICATION_DURATION_SEC}s of speech."
+                )
+
         emb1 = extract_embedding(wav1)
         emb2 = extract_embedding(wav2)
 
@@ -282,8 +343,10 @@ async def compare_voices(file1: UploadFile = File(...), file2: UploadFile = File
             "success": True,
             "similarity_score": similarity_clamped,
             "raw_cosine": similarity,
-            "match": similarity_clamped >= 0.70
+            "match": similarity_clamped >= VOICE_MATCH_THRESHOLD
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

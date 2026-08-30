@@ -108,6 +108,7 @@ export default function VoiceAuth() {
   // Verification test state
   const [verifying, setVerifying] = useState(false);
   const [testScore, setTestScore] = useState<number | null>(null);
+  const [testMatch, setTestMatch] = useState<boolean | null>(null);
 
   const recognitionRef = useRef<any>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -173,6 +174,7 @@ export default function VoiceAuth() {
     setInterimTranscript("");
     setAudioUrl(null);
     setTestScore(null);
+    setTestMatch(null);
 
     let accumulatedTranscript = '';
 
@@ -313,6 +315,7 @@ export default function VoiceAuth() {
     if (!currentUser?.uid) return;
     setVerifying(true);
     setTestScore(null);
+    setTestMatch(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream);
@@ -340,6 +343,7 @@ export default function VoiceAuth() {
       
       if (data.success) {
         setTestScore(data.similarity_score);
+        setTestMatch(data.match);
         if (data.match) {
           toast.success(`Speaker Verified! ECAPA Match Score: ${data.similarity_score}%`);
         } else {
@@ -589,7 +593,7 @@ export default function VoiceAuth() {
                       <ShieldCheck className="h-4 w-4" /> Live Speaker Verification Tester
                     </span>
                     {testScore !== null && (
-                      <Badge className={testScore >= 70 ? "bg-green-500/20 text-green-300" : "bg-amber-500/20 text-amber-300"}>
+                      <Badge className={testMatch ? "bg-green-500/20 text-green-300" : "bg-amber-500/20 text-amber-300"}>
                         {testScore}% Match
                       </Badge>
                     )}
