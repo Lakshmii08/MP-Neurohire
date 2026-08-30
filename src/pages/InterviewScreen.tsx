@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { generateInterviewQuestions, analyzeSpeechFromAudio, type InterviewQuestion, type SpeechAnalysisResult } from "@/lib/gemini";
-import { createInterviewSession, updateInterviewSession, saveProctoringEvent, type InterviewAnswer } from "@/lib/firestore";
+import { createInterviewSession, updateInterviewSession, type InterviewAnswer } from "@/lib/firestore";
 import { toast } from "sonner";
 
 // ── Audio Visualizer Component ──────────────────────────────────────────
@@ -88,6 +88,7 @@ export default function InterviewScreen() {
   const [processingAnswer, setProcessingAnswer] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [tabSwitchCount, setTabSwitchCount] = useState(0);
+  const [voiceSecurityPenalty, setVoiceSecurityPenalty] = useState(0);
 
   const [liveMetrics, setLiveMetrics] = useState({
     confidence: 0,
@@ -153,17 +154,31 @@ export default function InterviewScreen() {
   }, [currentUser, candidateData]);
 
   // ── Proctoring ─────────────────────────────────────────────────────
+  // Persisted to the database the moment it happens (not just batched into
+  // the final results call) so evidence survives an abandoned/incomplete
+  // interview, and so the recruiter's proctoring dashboard can show it.
   useEffect(() => {
     const handleVisibility = () => {
       if (document.hidden && sessionId) {
         setTabSwitchCount(prev => prev + 1);
-        saveProctoringEvent(sessionId, { type: 'tab_switch', severity: 'warning', timestamp: new Date() }).catch(console.error);
+        fetch('/api/interviews/proctor-event', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: currentUser?.uid,
+            session_id: sessionId,
+            event: 'Tab Switch Detected',
+            type: 'Proctor',
+            severity: 'warning',
+            tab_switching: true,
+          }),
+        }).catch(console.error);
         toast.warning("⚠️ Tab switch detected!");
       }
     };
     document.addEventListener('visibilitychange', handleVisibility);
     return () => document.removeEventListener('visibilitychange', handleVisibility);
-  }, [sessionId]);
+  }, [sessionId, currentUser]);
 
   // ── Timer ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -319,7 +334,10 @@ export default function InterviewScreen() {
                // actual identity mismatch.
                if (voiceMismatchCountRef.current >= 2) {
                  toast.error(`🚨 SECURITY ALERT: Repeated Voice Mismatch Detected! (${simScore}% match)`, { duration: 5000 });
-                 setTabSwitchCount(prev => prev + 2); // Penalize proctoring score by treating as severe violation
+                 // Tracked separately from tabSwitchCount — a voice mismatch is not
+                 // a tab switch, and conflating the two made "tab switches" reported
+                 // to recruiters inaccurate.
+                 setVoiceSecurityPenalty(prev => prev + 2);
                } else {
                  console.warn(`Voice mismatch on one answer (${simScore}% match) — awaiting confirmation on a later answer before flagging.`);
                  toast.warning(`Voice match lower than expected on this answer (${simScore}%). Continuing.`);
@@ -361,7 +379,7 @@ export default function InterviewScreen() {
         setProcessingAnswer(false);
       } else {
         const avgSpeechScore = Math.round(allAnswers.reduce((sum, a) => sum + a.speechAnalysis.score, 0) / allAnswers.length);
-        const proctoringScore = Math.max(0, 100 - tabSwitchCount * 15);
+        const proctoringScore = Math.max(0, 100 - tabSwitchCount * 15 - voiceSecurityPenalty * 15);
         const resumeScore = candidateData?.resumeScore ?? 70;
         const avgVoiceMatch = currentVoiceScores.length > 0 
           ? Math.round(currentVoiceScores.reduce((a, b) => a + b, 0) / currentVoiceScores.length)

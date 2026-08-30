@@ -9,43 +9,74 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Link } from "react-router-dom";
-import { getAllCompletedInterviews, subscribeToProctoringEvents, type InterviewSession, type ProctoringEvent } from "@/lib/firestore";
-import { Timestamp } from "firebase/firestore";
+
+interface Session {
+  id: string; // user_id — correlates with proctor_logs.user_id
+  candidateName: string;
+  role: string;
+  overallScore: number;
+  tabSwitchCount: number;
+}
+
+interface LogEntry {
+  user_id: number;
+  event: string;
+  time: string;
+  type: string;
+  severity: string;
+  tab_switching: number;
+}
 
 export default function ProctoringDashboard() {
-  const [interviews, setInterviews] = useState<InterviewSession[]>([]);
-  const [selectedSession, setSelectedSession] = useState<InterviewSession | null>(null);
-  const [proctoringLogs, setProctoringLogs] = useState<ProctoringEvent[]>([]);
+  const [interviews, setInterviews] = useState<Session[]>([]);
+  const [selectedSession, setSelectedSession] = useState<Session | null>(null);
+  const [allLogs, setAllLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Real candidate list + real proctor_logs from the database — tab-switch
+  // events are persisted the moment they happen (see InterviewScreen.tsx +
+  // POST /api/interviews/proctor-event), so this reflects actual activity
+  // rather than a per-browser-tab in-memory placeholder.
+  const loadData = () => {
+    return Promise.all([
+      fetch('/api/candidates').then(r => r.json()),
+      fetch('/api/logs').then(r => r.json()),
+    ]).then(([candidates, logs]: [any[], any[]]) => {
+      const logList: LogEntry[] = Array.isArray(logs) ? logs : [];
+      setAllLogs(logList);
+      const sessions: Session[] = (Array.isArray(candidates) ? candidates : []).map((c: any) => ({
+        id: String(c.user_id),
+        candidateName: c.name || 'Candidate',
+        role: c.role || 'Candidate',
+        overallScore: c.score || 0,
+        tabSwitchCount: logList.filter(l => String(l.user_id) === String(c.user_id) && l.tab_switching === 1).length,
+      }));
+      setInterviews(prev => {
+        // Keep the current selection stable across polling refreshes.
+        setSelectedSession(current => {
+          if (current) {
+            return sessions.find(s => s.id === current.id) ?? sessions[0] ?? null;
+          }
+          return sessions[0] ?? null;
+        });
+        return sessions;
+      });
+    });
+  };
+
   useEffect(() => {
-    getAllCompletedInterviews()
-      .then(data => {
-        setInterviews(data);
-        if (data.length > 0) setSelectedSession(data[0]);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
+    loadData().catch(console.error).finally(() => setLoading(false));
+    // Light polling so tab-switch events from an in-progress interview show
+    // up without requiring a manual page refresh.
+    const interval = setInterval(() => loadData().catch(console.error), 15000);
+    return () => clearInterval(interval);
   }, []);
 
-  // Subscribe to real-time proctoring events for selected session
-  useEffect(() => {
-    if (!selectedSession?.id) return;
-    const unsubscribe = subscribeToProctoringEvents(selectedSession.id, (events) => {
-      setProctoringLogs(events);
-    });
-    return () => unsubscribe();
-  }, [selectedSession?.id]);
+  const proctoringLogs = selectedSession
+    ? allLogs.filter(l => String(l.user_id) === selectedSession.id)
+    : [];
 
-  const formatTime = (ts: any) => {
-    if (!ts) return '--:--:--';
-    try {
-      const date = ts instanceof Timestamp ? ts.toDate() : new Date(ts);
-      return date.toLocaleTimeString();
-    } catch {
-      return '--:--:--';
-    }
-  };
+  const formatTime = (time: string) => time || '--:--:--';
 
   const suspicionScore = selectedSession
     ? Math.min(100, Math.round((selectedSession.tabSwitchCount / 5) * 100))
@@ -59,14 +90,24 @@ export default function ProctoringDashboard() {
     phone_detected: Monitor,
   };
 
+  // Real proctor_logs rows use 'high'/'medium'/'low' severities (see
+  // db.js seed data); events created directly by this app use 'warning'/
+  // 'critical'. Map both conventions so real data renders with sensible
+  // colors instead of falling back to generic gray.
   const logColorMap: Record<string, string> = {
     warning: 'text-orange-500',
+    medium: 'text-orange-500',
     critical: 'text-red-500',
+    high: 'text-red-500',
+    low: 'text-slate-400',
   };
 
   const statusColorMap: Record<string, string> = {
     warning: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
+    medium: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
     critical: 'bg-red-500/10 text-red-400 border-red-500/20',
+    high: 'bg-red-500/10 text-red-400 border-red-500/20',
+    low: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
   };
 
   // Build static indicator statuses from session data
@@ -271,9 +312,10 @@ export default function ProctoringDashboard() {
                       </div>
                     ) : (
                       proctoringLogs.map((log, idx) => {
-                        const IconComp = logIconMap[log.type] ?? AlertTriangle;
-                        const colorClass = logColorMap[log.severity] ?? 'text-slate-500';
-                        const statusClass = statusColorMap[log.severity] ?? 'bg-slate-500/10 text-slate-400 border-slate-500/20';
+                        const IconComp = log.tab_switching ? TabIcon : (logIconMap[log.type] ?? AlertTriangle);
+                        const severityKey = (log.severity || '').toLowerCase();
+                        const colorClass = logColorMap[severityKey] ?? 'text-slate-500';
+                        const statusClass = statusColorMap[severityKey] ?? 'bg-slate-500/10 text-slate-400 border-slate-500/20';
                         return (
                           <div key={idx} className="px-6 py-4 flex items-center justify-between hover:bg-white/5 transition-colors cursor-pointer group">
                             <div className="flex items-center gap-4">
@@ -281,8 +323,8 @@ export default function ProctoringDashboard() {
                                 <IconComp className="h-4 w-4" />
                               </div>
                               <div>
-                                <p className="text-sm font-bold text-slate-200 capitalize">{log.type.replace('_', ' ')}</p>
-                                <p className="text-[10px] text-slate-500 font-mono">{formatTime(log.timestamp)}</p>
+                                <p className="text-sm font-bold text-slate-200">{log.event || log.type}</p>
+                                <p className="text-[10px] text-slate-500 font-mono">{formatTime(log.time)}</p>
                               </div>
                             </div>
                             <Badge variant="outline" className={`${statusClass} border text-[8px] uppercase tracking-widest font-bold`}>

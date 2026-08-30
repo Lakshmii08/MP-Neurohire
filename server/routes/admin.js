@@ -5,7 +5,7 @@ const router = express.Router();
 
 router.get('/candidates', (req, res) => {
   const candidates = db.prepare(`
-    SELECT c.id, u.name, c.role_applied as role, c.score, c.status, c.voice_score as voice, c.proctor_score as proctor 
+    SELECT c.id, c.user_id, u.name, c.role_applied as role, c.score, c.status, c.voice_score as voice, c.proctor_score as proctor
     FROM candidates c
     JOIN users u ON c.user_id = u.id
   `).all();
