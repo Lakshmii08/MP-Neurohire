@@ -47,6 +47,19 @@ router.post('/jobs', (req, res) => {
   }
 });
 
+router.put('/jobs/:id/status', (req, res) => {
+  const { status } = req.body;
+  if (!status || !['Open', 'Closed'].includes(status)) {
+    return res.status(400).json({ success: false, message: 'Status must be "Open" or "Closed".' });
+  }
+  try {
+    db.prepare('UPDATE jobs SET status = ?, active = ? WHERE id = ?').run(status, status === 'Open' ? 1 : 0, req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 router.get('/logs', (req, res) => {
   // Try to join with candidates to get names for newer logs
   const logs = db.prepare(`

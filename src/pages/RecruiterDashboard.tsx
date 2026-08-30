@@ -8,7 +8,7 @@ import { motion } from "motion/react";
 import {
   Users, Video, FileText, AlertCircle, Search, Bell,
   Target, TrendingUp, UserCheck, UserMinus, Settings,
-  LayoutDashboard, BarChart3, ShieldCheck, Plus, LogOut, Building
+  LayoutDashboard, BarChart3, ShieldCheck, Plus, LogOut, Building, Briefcase
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -175,6 +175,9 @@ export default function RecruiterDashboard() {
           </Link>
           <Link to="/recruiter/proctoring" className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors" title="Proctoring">
             <Video className="w-6 h-6" />
+          </Link>
+          <Link to="/recruiter/jobs" className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors" title="Job Postings">
+            <Briefcase className="w-6 h-6" />
           </Link>
           <div className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors cursor-pointer" title="Reports">
             <FileText className="w-6 h-6" />

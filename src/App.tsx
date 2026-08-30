@@ -11,6 +11,7 @@ import InterviewScreen from '@/pages/InterviewScreen';
 import VoiceAuth from '@/pages/VoiceAuth';
 import ProctoringDashboard from '@/pages/ProctoringDashboard';
 import RecruiterDashboard from '@/pages/RecruiterDashboard';
+import RecruiterJobs from '@/pages/RecruiterJobs';
 import RecruiterAuth from '@/pages/RecruiterAuth';
 import CandidateReport from '@/pages/CandidateReport';
 import Analytics from '@/pages/Analytics';
@@ -35,6 +36,7 @@ export default function App() {
 
               {/* Recruiter routes (auth handled internally) */}
               <Route path="/recruiter" element={<RecruiterDashboard />} />
+              <Route path="/recruiter/jobs" element={<RecruiterJobs />} />
               <Route path="/recruiter/proctoring" element={<ProctoringDashboard />} />
               <Route path="/recruiter/analytics" element={<Analytics />} />
 
