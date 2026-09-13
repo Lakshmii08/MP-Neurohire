@@ -11,6 +11,7 @@ A candidate uploads a resume, enrolls a voice sample, and takes a five-question 
 - **Skill-based job recommendations** — rule-based scoring of a candidate's extracted skills against recruiter-posted job requirements
 - **Recruiter dashboard & job postings** — post/close roles, see real candidate data and scores
 - **Voice biometric enrollment & verification** — a 192-dim ECAPA-TDNN speaker embedding captured at enrollment, re-verified by cosine similarity on every interview answer
+- **Facial identity continuity check** — a facial-geometry signature captured alongside the voice sample at enrollment, continuously compared against the live interview camera feed so the same person who logged in is the one answering questions
 - **AI-generated interview** — Gemini-generated, role-specific questions with live in-browser speech-to-text
 - **Speech analysis** — fluency, clarity, and confidence scores computed from real acoustic features (pitch, energy, silence ratio) and a classifier trained on top of the frozen speaker embeddings — not a static or hardcoded score
 - **Proctoring** — real-time tab-switch detection, plus client-side face/gaze monitoring (MediaPipe FaceLandmarker) that detects no-face, multiple-face, and sustained looking-away conditions — all persisted to the database immediately and shown on a live recruiter dashboard
@@ -131,7 +132,8 @@ python_ml_service/        FastAPI ML service
 - **Passwords are stored in plaintext** in the `users` table — fine for a local demo, not for production use.
 - **Job matching is rule-based text matching** (skill overlap + a few hard-coded synonyms), not a trained recommender.
 - **Voice-verification calibration used synthetic (TTS-generated) voices**, since no real multi-speaker human corpus was available. `calibrate_voice_threshold.py` accepts real recordings if you have them.
-- **Face presence, multiple-face, and gaze-deviation proctoring are backed by MediaPipe FaceLandmarker** (client-side, no video is uploaded or stored) alongside tab-switch detection; **head-movement and phone-presence indicators remain UI placeholders** ("Not Monitored") since no detector exists for them yet.
+- **Face presence, multiple-face, and gaze-deviation proctoring are backed by MediaPipe FaceLandmarker** (client-side, no video is uploaded or stored) alongside tab-switch detection; **phone-presence indicator remains a UI placeholder** ("Not Monitored") since no detector exists for it yet.
+- **The facial identity check is a geometric-similarity heuristic, not true face recognition.** There's no pretrained face-recognition/embedding model (e.g. FaceNet, ArcFace) available in this environment, so `src/lib/faceIdentity.ts` instead builds a signature from normalized pairwise distances between ~15 stable MediaPipe FaceLandmarker points (eye corners, nose, mouth, chin, cheeks) and compares by relative distance. This is a much weaker discriminator than a learned embedding — human faces share broadly similar proportions — and its match threshold is a reasonable starting default, not empirically calibrated (this sandbox can't produce two distinct real faces to calibrate against, the same limitation noted for the voice-verification threshold above). Recalibrate it against real enrolled/impostor face pairs before relying on it for anything higher-stakes than a proctoring flag a human recruiter reviews.
 - Resume analysis and interview-question generation depend on an optional Gemini API key; both degrade gracefully without one.
 
 ## License
