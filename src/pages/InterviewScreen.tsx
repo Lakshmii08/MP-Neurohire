@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Mic, MicOff, Settings, Timer, AlertTriangle,
-  CheckCircle, Zap, ArrowRight, Activity, Volume2, Shield, Camera
+  CheckCircle, Zap, ArrowRight, Activity, Volume2, Shield, Camera, UserX, Users, Eye
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -92,6 +92,17 @@ export default function InterviewScreen() {
   const [voiceSecurityPenalty, setVoiceSecurityPenalty] = useState(0);
   const [videoSecurityPenalty, setVideoSecurityPenalty] = useState(0);
   const [videoMonitoringActive, setVideoMonitoringActive] = useState(false);
+  // Raw, current-frame readout (updates every ~700ms regardless of whether
+  // it's sustained long enough to become a logged violation) so the
+  // candidate sees what the camera sees right now, not just a static
+  // "ACTIVE" chip that never changes during the interview.
+  const [liveFaceCount, setLiveFaceCount] = useState<number | null>(null);
+  const [liveGazeAway, setLiveGazeAway] = useState(false);
+  // Confirmed (debounced) violations — this is what actually gets persisted
+  // and penalized, shown here as a running log + count so the candidate can
+  // see it accumulate live instead of only as a toast that disappears.
+  const [videoAlertCount, setVideoAlertCount] = useState(0);
+  const [videoViolationLog, setVideoViolationLog] = useState<{ label: string; time: string; icon: 'no_face' | 'multiple_face' | 'gaze' }[]>([]);
 
   const [liveMetrics, setLiveMetrics] = useState({
     confidence: 0,
@@ -238,20 +249,31 @@ export default function InterviewScreen() {
           if (!video || video.readyState < 2) return;
 
           const { faceCount, gazeDeviation } = analyzeVideoFrame(landmarker, video, performance.now());
+          const isGazeAway = faceCount === 1 && gazeDeviation > 0.6;
+          setLiveFaceCount(faceCount);
+          setLiveGazeAway(isGazeAway);
+
+          const logViolation = (label: string, icon: 'no_face' | 'multiple_face' | 'gaze') => {
+            setVideoAlertCount(prev => prev + 1);
+            setVideoViolationLog(prev => [{ label, time: new Date().toLocaleTimeString(), icon }, ...prev].slice(0, 5));
+          };
 
           if (noFaceConditionRef.current.update(faceCount === 0)) {
             setVideoSecurityPenalty(prev => prev + 1);
             reportEvent('No Face Detected', { no_face: true });
+            logViolation('No Face Detected', 'no_face');
             toast.warning("⚠️ Face not visible in camera!");
           }
           if (multipleFaceConditionRef.current.update(faceCount > 1)) {
             setVideoSecurityPenalty(prev => prev + 2);
             reportEvent(`Multiple Faces Detected (${faceCount})`, { multiple_face: true });
+            logViolation(`Multiple Faces Detected (${faceCount})`, 'multiple_face');
             toast.error("🚨 Multiple faces detected in frame!");
           }
-          if (gazeAwayConditionRef.current.update(faceCount === 1 && gazeDeviation > 0.6)) {
+          if (gazeAwayConditionRef.current.update(isGazeAway)) {
             setVideoSecurityPenalty(prev => prev + 1);
             reportEvent('Sustained Gaze Deviation Detected', { suspicious_activity: true });
+            logViolation('Looking Away From Screen', 'gaze');
             toast.warning("⚠️ Please keep looking at the screen.");
           }
         }, 700);
@@ -539,9 +561,11 @@ export default function InterviewScreen() {
                 Video Monitor: {videoMonitoringActive ? 'ACTIVE' : 'CONNECTING'}
               </span>
             </div>
-            <div className="flex items-center gap-3 px-4 py-1.5 bg-white/5 border border-white/10 rounded-xl">
-              <Shield className="h-4 w-4 text-green-400" />
-              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Proctoring: ACTIVE</span>
+            <div className={`flex items-center gap-3 px-4 py-1.5 rounded-xl border ${(tabSwitchCount + videoAlertCount) > 0 ? 'bg-red-500/10 border-red-500/20' : 'bg-white/5 border-white/10'}`}>
+              <Shield className={`h-4 w-4 ${(tabSwitchCount + videoAlertCount) > 0 ? 'text-red-400' : 'text-green-400'}`} />
+              <span className={`text-[10px] font-bold uppercase tracking-widest ${(tabSwitchCount + videoAlertCount) > 0 ? 'text-red-400' : 'text-slate-400'}`}>
+                Integrity Alerts: {tabSwitchCount + videoAlertCount}
+              </span>
             </div>
             <button
               onClick={() => navigate('/candidate')}
@@ -614,26 +638,75 @@ export default function InterviewScreen() {
                   {/* Waveform Overlay */}
                   <AudioWaves isRecording={isRecording} />
 
-                  {/* Face Guide */}
-                  <div className="w-64 h-80 border border-cyan-500/20 rounded-[100px] flex items-center justify-center">
-                    <div className="text-center opacity-20">
-                      <Volume2 className={`h-16 w-16 mx-auto mb-4 ${isRecording ? 'text-cyan-400 animate-pulse' : 'text-slate-600'}`} />
-                      <p className="text-[10px] font-bold uppercase tracking-widest font-mono">
-                        {isRecording ? 'CAPTURE_IN_PROGRESS' : 'STANDBY_MODE'}
-                      </p>
+                  {/* Face Guide — reflects the live MediaPipe reading, not a decorative placeholder */}
+                  <div className={`w-64 h-80 border rounded-[100px] flex items-center justify-center transition-colors ${
+                    liveFaceCount === null ? 'border-cyan-500/20' :
+                    liveFaceCount === 0 ? 'border-red-500/40' :
+                    liveFaceCount > 1 ? 'border-red-500/40' :
+                    liveGazeAway ? 'border-orange-500/40' : 'border-green-500/30'
+                  }`}>
+                    <div className="text-center opacity-70">
+                      {liveFaceCount === null ? (
+                        <>
+                          <Camera className="h-16 w-16 mx-auto mb-4 text-slate-600 animate-pulse" />
+                          <p className="text-[10px] font-bold uppercase tracking-widest font-mono text-slate-500">Connecting Camera...</p>
+                        </>
+                      ) : liveFaceCount === 0 ? (
+                        <>
+                          <UserX className="h-16 w-16 mx-auto mb-4 text-red-400 animate-pulse" />
+                          <p className="text-[10px] font-bold uppercase tracking-widest font-mono text-red-400">No Face Detected</p>
+                        </>
+                      ) : liveFaceCount > 1 ? (
+                        <>
+                          <Users className="h-16 w-16 mx-auto mb-4 text-red-400 animate-pulse" />
+                          <p className="text-[10px] font-bold uppercase tracking-widest font-mono text-red-400">Multiple Faces ({liveFaceCount})</p>
+                        </>
+                      ) : liveGazeAway ? (
+                        <>
+                          <Eye className="h-16 w-16 mx-auto mb-4 text-orange-400" />
+                          <p className="text-[10px] font-bold uppercase tracking-widest font-mono text-orange-400">Looking Away</p>
+                        </>
+                      ) : (
+                        <>
+                          <Camera className="h-16 w-16 mx-auto mb-4 text-green-400" />
+                          <p className="text-[10px] font-bold uppercase tracking-widest font-mono text-green-400">Face Detected</p>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
               </div>
 
               {/* Status HUD */}
-              <div className="absolute top-10 left-10 flex gap-4">
-                <div className="bg-black/60 backdrop-blur-md px-4 py-2 rounded-xl border border-white/10 flex items-center gap-3">
+              <div className="absolute top-10 left-10 flex flex-col gap-3 max-w-xs">
+                <div className="bg-black/60 backdrop-blur-md px-4 py-2 rounded-xl border border-white/10 flex items-center gap-3 w-fit">
                   <div className={`w-2 h-2 rounded-full ${isRecording ? 'bg-red-500 animate-pulse shadow-[0_0_10px_red]' : 'bg-green-500'}`} />
                   <span className="text-[10px] font-bold uppercase tracking-widest text-white">
                     {isRecording ? 'Live Mic' : 'Biometric ID OK'}
                   </span>
                 </div>
+
+                {/* Live proctoring violation feed — shown throughout the interview,
+                    not just as a toast that disappears after a few seconds */}
+                {videoViolationLog.length > 0 && (
+                  <div className="bg-black/60 backdrop-blur-md px-4 py-3 rounded-xl border border-red-500/20 space-y-2">
+                    <p className="text-[9px] font-bold uppercase tracking-widest text-red-400 flex items-center gap-2">
+                      <AlertTriangle className="h-3 w-3" /> Integrity Log ({videoAlertCount})
+                    </p>
+                    <div className="space-y-1.5">
+                      {videoViolationLog.slice(0, 3).map((v, i) => {
+                        const VIcon = v.icon === 'no_face' ? UserX : v.icon === 'multiple_face' ? Users : Eye;
+                        return (
+                          <div key={i} className="flex items-center gap-2 text-[10px] text-slate-300">
+                            <VIcon className="h-3 w-3 text-red-400 flex-shrink-0" />
+                            <span className="truncate">{v.label}</span>
+                            <span className="ml-auto text-slate-500 font-mono flex-shrink-0">{v.time}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex items-center gap-8 px-10 py-6 rounded-[32px] bg-white/5 backdrop-blur-3xl border border-white/10 shadow-2xl z-30">
