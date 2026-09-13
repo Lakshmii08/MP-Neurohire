@@ -183,6 +183,7 @@ db.exec(`
 // Migration guards: add missing columns if DB was created before this version
 const migrateColumns = [
   { table: 'voice_auth', col: 'voice_embedding', type: 'TEXT' },
+  { table: 'voice_auth', col: 'face_signature', type: 'TEXT' },
   { table: 'resume_analysis', col: 'qualifications', type: 'TEXT' },
   { table: 'resume_analysis', col: 'experience', type: 'TEXT' },
   { table: 'resume_analysis', col: 'projects', type: 'TEXT' },

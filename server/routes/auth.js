@@ -148,7 +148,7 @@ router.get('/ml-status', async (req, res) => {
 });
 
 router.post('/verify-voice', upload.single('voice_sample'), async (req, res) => {
-  const { id, score } = req.body;
+  const { id, score, face_signature } = req.body;
   const voice_sample_path = req.file ? req.file.path : null;
 
   // Reject requests with no valid score — removes the || 85 bypass
@@ -201,16 +201,30 @@ router.post('/verify-voice', upload.single('voice_sample'), async (req, res) => 
     // ── Step 2: Persist embedding and mark user verified ────────────────────
     db.prepare('UPDATE users SET voice_verified = 1 WHERE id = ?').run(id);
 
-    const existing = db.prepare('SELECT id FROM voice_auth WHERE user_id = ?').get(id);
-    if (existing) {
-      db.prepare('UPDATE voice_auth SET voice_sample_path = ?, voice_embedding = ?, similarity_score = ?, verification_status = ? WHERE user_id = ?')
-        .run(voice_sample_path, embeddingStr, finalScore, 'Verified', id);
-    } else {
-      db.prepare('INSERT INTO voice_auth (user_id, voice_sample_path, voice_embedding, similarity_score, verification_status) VALUES (?, ?, ?, ?, ?)')
-        .run(id, voice_sample_path, embeddingStr, finalScore, 'Verified');
+    // Face signature is captured client-side (MediaPipe FaceLandmarker geometry,
+    // see src/lib/faceIdentity.ts) and is optional — enrollment must not fail
+    // just because the webcam wasn't available or no face was detected in the
+    // enrollment snapshot. Validate defensively rather than trusting the client.
+    let faceSignatureStr = null;
+    if (face_signature) {
+      try {
+        const parsed = JSON.parse(face_signature);
+        if (Array.isArray(parsed) && parsed.every(n => typeof n === 'number')) {
+          faceSignatureStr = JSON.stringify(parsed);
+        }
+      } catch { /* ignore malformed signature, enroll voice-only */ }
     }
 
-    res.json({ success: true, score: finalScore, hasEmbedding: true });
+    const existing = db.prepare('SELECT id FROM voice_auth WHERE user_id = ?').get(id);
+    if (existing) {
+      db.prepare('UPDATE voice_auth SET voice_sample_path = ?, voice_embedding = ?, similarity_score = ?, verification_status = ?, face_signature = COALESCE(?, face_signature) WHERE user_id = ?')
+        .run(voice_sample_path, embeddingStr, finalScore, 'Verified', faceSignatureStr, id);
+    } else {
+      db.prepare('INSERT INTO voice_auth (user_id, voice_sample_path, voice_embedding, similarity_score, verification_status, face_signature) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(id, voice_sample_path, embeddingStr, finalScore, 'Verified', faceSignatureStr);
+    }
+
+    res.json({ success: true, score: finalScore, hasEmbedding: true, hasFaceSignature: !!faceSignatureStr });
   } catch (error) {
     console.error('verify-voice error:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -262,6 +276,22 @@ router.post('/verify-voice-match', upload.single('voice_sample'), async (req, re
     }
   } catch (error) {
     console.error('verify-voice-match error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Returns the enrolled facial-geometry signature (see src/lib/faceIdentity.ts)
+// so the interview screen can fetch it once at session start and run all
+// per-frame identity comparisons client-side, rather than posting a frame's
+// signature to the server on every ~700ms tick.
+router.get('/face-signature/:id', (req, res) => {
+  try {
+    const record = db.prepare('SELECT face_signature FROM voice_auth WHERE user_id = ?').get(req.params.id);
+    if (!record || !record.face_signature) {
+      return res.json({ success: true, signature: null });
+    }
+    res.json({ success: true, signature: JSON.parse(record.face_signature) });
+  } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });

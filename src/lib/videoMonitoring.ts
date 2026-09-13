@@ -12,7 +12,7 @@
 //     (eyeLookIn/Out/Up/Down, Left/Right). Blendshapes were chosen over
 //     decomposing the transformation matrix into Euler angles because their
 //     meaning is unambiguous and needs no rotation-order assumptions.
-import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+import { FaceLandmarker, FilesetResolver, type NormalizedLandmark } from "@mediapipe/tasks-vision";
 
 let landmarkerPromise: Promise<FaceLandmarker> | null = null;
 
@@ -59,6 +59,12 @@ const GAZE_BLENDSHAPES = [
 export interface VideoFrameAnalysis {
   faceCount: number;
   gazeDeviation: number; // 0-1, higher = looking further away from camera
+  // The first detected face's raw landmarks, present only when exactly one
+  // face is in frame — callers (e.g. face-identity comparison) reuse these
+  // instead of running a second detectForVideo() call on the same frame,
+  // which MediaPipe's video mode doesn't support (it requires monotonically
+  // increasing timestamps per call).
+  landmarks: NormalizedLandmark[] | null;
 }
 
 export function analyzeVideoFrame(
@@ -79,7 +85,9 @@ export function analyzeVideoFrame(
     }
   }
 
-  return { faceCount, gazeDeviation };
+  const landmarks = faceCount === 1 ? (result.faceLandmarks[0] ?? null) : null;
+
+  return { faceCount, gazeDeviation, landmarks };
 }
 
 // ── Debounce helper ──────────────────────────────────────────────────────

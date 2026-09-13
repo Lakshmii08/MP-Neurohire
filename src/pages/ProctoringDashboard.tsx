@@ -1,9 +1,9 @@
 import { useState, useEffect } from "react";
 import { motion } from "motion/react";
 import {
-  ShieldAlert, Eye, Move, Layout as TabIcon, Users, Activity,
+  ShieldAlert, Eye, Layout as TabIcon, Users, Activity,
   UserX, Camera, RefreshCw, Flag, AlertTriangle, Monitor,
-  LayoutDashboard, BarChart3, Video, FileText
+  LayoutDashboard, BarChart3, Video, FileText, ScanFace
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -95,7 +95,12 @@ export default function ProctoringDashboard() {
 
   const noFaceCount = proctoringLogs.filter(l => l.no_face === 1).length;
   const multipleFaceCount = proctoringLogs.filter(l => l.multiple_face === 1).length;
-  const gazeDeviationCount = proctoringLogs.filter(l => l.suspicious_activity === 1).length;
+  // suspicious_activity is a shared flag reused by three distinct signals
+  // (gaze deviation, face-identity mismatch, and voice mismatch) — disambiguate
+  // by event text rather than treating the boolean alone as "eye direction",
+  // which used to conflate all three under one indicator.
+  const gazeDeviationCount = proctoringLogs.filter(l => l.suspicious_activity === 1 && l.event?.toLowerCase().includes('gaze')).length;
+  const identityMismatchCount = proctoringLogs.filter(l => l.suspicious_activity === 1 && l.event?.toLowerCase().includes('identity mismatch')).length;
 
   // Real proctor_logs rows use 'high'/'medium'/'low' severities (see
   // db.js seed data); events created directly by this app use 'warning'/
@@ -120,13 +125,13 @@ export default function ProctoringDashboard() {
   // Real indicators, backed by MediaPipe FaceLandmarker events persisted from
   // InterviewScreen.tsx (no_face / multiple_face / suspicious_activity
   // columns in proctor_logs) — no more hardcoded "Safe" placeholders for
-  // Face Detected / Multiple Faces / Eye Direction. Head Movement and Phone
-  // Presence have no real detector behind them yet, so they're shown as
+  // Face Detected / Multiple Faces / Eye Direction / Identity Verification.
+  // Phone Presence has no real detector behind it yet, so it's shown as
   // "Not Monitored" rather than a fake green status.
   const indicators = selectedSession ? [
     { label: "Face Detected", status: noFaceCount > 0 ? "Danger" : "Safe", icon: Camera, color: noFaceCount > 0 ? "text-red-400" : "text-green-400", bg: noFaceCount > 0 ? "bg-red-500/10" : "bg-green-500/10" },
     { label: "Eye Direction", status: gazeDeviationCount > 0 ? "Warning" : "Safe", icon: Eye, color: gazeDeviationCount > 0 ? "text-orange-400" : "text-green-400", bg: gazeDeviationCount > 0 ? "bg-orange-500/10" : "bg-green-500/10" },
-    { label: "Head Movement", status: "Not Monitored", icon: Move, color: "text-slate-500", bg: "bg-slate-500/10" },
+    { label: "Identity Verification", status: identityMismatchCount > 0 ? "Danger" : "Safe", icon: ScanFace, color: identityMismatchCount > 0 ? "text-red-400" : "text-green-400", bg: identityMismatchCount > 0 ? "bg-red-500/10" : "bg-green-500/10" },
     { label: "Multiple Faces", status: multipleFaceCount > 0 ? "Danger" : "Safe", icon: Users, color: multipleFaceCount > 0 ? "text-red-400" : "text-green-400", bg: multipleFaceCount > 0 ? "bg-red-500/10" : "bg-green-500/10" },
     { label: "Tab Switching", status: selectedSession.tabSwitchCount > 0 ? "Danger" : "Safe", icon: TabIcon, color: selectedSession.tabSwitchCount > 0 ? "text-red-400" : "text-green-400", bg: selectedSession.tabSwitchCount > 0 ? "bg-red-500/10" : "bg-green-500/10" },
     { label: "Phone Presence", status: "Not Monitored", icon: Monitor, color: "text-slate-500", bg: "bg-slate-500/10" },
@@ -324,9 +329,11 @@ export default function ProctoringDashboard() {
                       </div>
                     ) : (
                       proctoringLogs.map((log, idx) => {
+                        const eventLower = (log.event || '').toLowerCase();
                         const IconComp = log.tab_switching ? TabIcon
                           : log.multiple_face ? Users
                           : log.no_face ? UserX
+                          : eventLower.includes('identity mismatch') ? ScanFace
                           : log.suspicious_activity ? Eye
                           : (logIconMap[log.type] ?? AlertTriangle);
                         const severityKey = (log.severity || '').toLowerCase();
