@@ -107,7 +107,10 @@ router.post('/result', (req, res) => {
 // returned, browser closed) leaves zero record of the violations that
 // happened — they only reached the DB bundled into the final /result call.
 router.post('/proctor-event', (req, res) => {
-  const { user_id, session_id, event, type, severity, tab_switching } = req.body;
+  const {
+    user_id, session_id, event, type, severity,
+    tab_switching, multiple_face, no_face, suspicious_activity,
+  } = req.body;
 
   if (!user_id || !session_id) {
     return res.status(400).json({ success: false, message: 'user_id and session_id are required.' });
@@ -115,15 +118,18 @@ router.post('/proctor-event', (req, res) => {
 
   try {
     db.prepare(`INSERT INTO proctor_logs
-      (user_id, session_id, event, time, type, severity, tab_switching)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+      (user_id, session_id, event, time, type, severity, tab_switching, multiple_face, no_face, suspicious_activity)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       user_id,
       session_id,
       event || 'Tab Switch Detected',
       new Date().toLocaleTimeString(),
       type || 'Proctor',
       severity || 'warning',
-      tab_switching ? 1 : 0
+      tab_switching ? 1 : 0,
+      multiple_face ? 1 : 0,
+      no_face ? 1 : 0,
+      suspicious_activity ? 1 : 0
     );
     res.json({ success: true });
   } catch (error) {

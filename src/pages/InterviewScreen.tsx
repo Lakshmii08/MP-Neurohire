@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Mic, MicOff, Settings, Timer, AlertTriangle,
-  CheckCircle, Zap, ArrowRight, Activity, Volume2, Shield
+  CheckCircle, Zap, ArrowRight, Activity, Volume2, Shield, Camera
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +10,7 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { generateInterviewQuestions, analyzeSpeechFromAudio, type InterviewQuestion, type SpeechAnalysisResult } from "@/lib/gemini";
 import { createInterviewSession, updateInterviewSession, type InterviewAnswer } from "@/lib/firestore";
+import { getFaceLandmarker, analyzeVideoFrame, SustainedCondition } from "@/lib/videoMonitoring";
 import { toast } from "sonner";
 
 // ── Audio Visualizer Component ──────────────────────────────────────────
@@ -89,6 +90,8 @@ export default function InterviewScreen() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [tabSwitchCount, setTabSwitchCount] = useState(0);
   const [voiceSecurityPenalty, setVoiceSecurityPenalty] = useState(0);
+  const [videoSecurityPenalty, setVideoSecurityPenalty] = useState(0);
+  const [videoMonitoringActive, setVideoMonitoringActive] = useState(false);
 
   const [liveMetrics, setLiveMetrics] = useState({
     confidence: 0,
@@ -108,6 +111,14 @@ export default function InterviewScreen() {
   const [voiceMatchScores, setVoiceMatchScores] = useState<number[]>([]);
   const confidenceSamplesRef = useRef<number[]>([]);
   const voiceMismatchCountRef = useRef(0);
+
+  // ── Video monitoring refs ────────────────────────────────────────────
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const videoStreamRef = useRef<MediaStream | null>(null);
+  const videoIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const noFaceConditionRef = useRef(new SustainedCondition(3));
+  const multipleFaceConditionRef = useRef(new SustainedCondition(3));
+  const gazeAwayConditionRef = useRef(new SustainedCondition(4));
 
   // ── Load questions ──────────────────────────────────────────────────
   useEffect(() => {
@@ -179,6 +190,84 @@ export default function InterviewScreen() {
     document.addEventListener('visibilitychange', handleVisibility);
     return () => document.removeEventListener('visibilitychange', handleVisibility);
   }, [sessionId, currentUser]);
+
+  // ── Video monitoring (face presence/count + gaze) ────────────────────
+  // Runs for the whole interview, independent of the mic-recording toggle —
+  // integrity monitoring shouldn't stop just because the candidate paused
+  // dictation. Each frame is analyzed by MediaPipe's FaceLandmarker; a
+  // reading only becomes an event after it holds for several consecutive
+  // checks (SustainedCondition), so a single blink or momentary head turn
+  // never fires a false violation. Confirmed events are persisted the
+  // instant they happen via the same /api/interviews/proctor-event endpoint
+  // tab-switching already uses.
+  useEffect(() => {
+    if (loading || !sessionId) return;
+    let cancelled = false;
+
+    const reportEvent = (event: string, fields: Record<string, boolean>) => {
+      fetch('/api/interviews/proctor-event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: currentUser?.uid,
+          session_id: sessionId,
+          event,
+          type: 'Proctor',
+          severity: 'high',
+          ...fields,
+        }),
+      }).catch(console.error);
+    };
+
+    const start = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } });
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
+        videoStreamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+
+        const landmarker = await getFaceLandmarker();
+        if (cancelled) return;
+        setVideoMonitoringActive(true);
+
+        videoIntervalRef.current = setInterval(() => {
+          const video = videoRef.current;
+          if (!video || video.readyState < 2) return;
+
+          const { faceCount, gazeDeviation } = analyzeVideoFrame(landmarker, video, performance.now());
+
+          if (noFaceConditionRef.current.update(faceCount === 0)) {
+            setVideoSecurityPenalty(prev => prev + 1);
+            reportEvent('No Face Detected', { no_face: true });
+            toast.warning("⚠️ Face not visible in camera!");
+          }
+          if (multipleFaceConditionRef.current.update(faceCount > 1)) {
+            setVideoSecurityPenalty(prev => prev + 2);
+            reportEvent(`Multiple Faces Detected (${faceCount})`, { multiple_face: true });
+            toast.error("🚨 Multiple faces detected in frame!");
+          }
+          if (gazeAwayConditionRef.current.update(faceCount === 1 && gazeDeviation > 0.6)) {
+            setVideoSecurityPenalty(prev => prev + 1);
+            reportEvent('Sustained Gaze Deviation Detected', { suspicious_activity: true });
+            toast.warning("⚠️ Please keep looking at the screen.");
+          }
+        }, 700);
+      } catch (err) {
+        console.error("Video monitoring unavailable:", err);
+      }
+    };
+    start();
+
+    return () => {
+      cancelled = true;
+      if (videoIntervalRef.current) clearInterval(videoIntervalRef.current);
+      if (videoStreamRef.current) videoStreamRef.current.getTracks().forEach(t => t.stop());
+      setVideoMonitoringActive(false);
+    };
+  }, [loading, sessionId, currentUser]);
 
   // ── Timer ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -379,7 +468,7 @@ export default function InterviewScreen() {
         setProcessingAnswer(false);
       } else {
         const avgSpeechScore = Math.round(allAnswers.reduce((sum, a) => sum + a.speechAnalysis.score, 0) / allAnswers.length);
-        const proctoringScore = Math.max(0, 100 - tabSwitchCount * 15 - voiceSecurityPenalty * 15);
+        const proctoringScore = Math.max(0, 100 - tabSwitchCount * 15 - voiceSecurityPenalty * 15 - videoSecurityPenalty * 10);
         const resumeScore = candidateData?.resumeScore ?? 70;
         const avgVoiceMatch = currentVoiceScores.length > 0 
           ? Math.round(currentVoiceScores.reduce((a, b) => a + b, 0) / currentVoiceScores.length)
@@ -445,6 +534,12 @@ export default function InterviewScreen() {
 
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-3 px-4 py-1.5 bg-white/5 border border-white/10 rounded-xl">
+              <Camera className={`h-4 w-4 ${videoMonitoringActive ? 'text-green-400' : 'text-slate-500'}`} />
+              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                Video Monitor: {videoMonitoringActive ? 'ACTIVE' : 'CONNECTING'}
+              </span>
+            </div>
+            <div className="flex items-center gap-3 px-4 py-1.5 bg-white/5 border border-white/10 rounded-xl">
               <Shield className="h-4 w-4 text-green-400" />
               <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Proctoring: ACTIVE</span>
             </div>
@@ -506,12 +601,19 @@ export default function InterviewScreen() {
           {/* Camera / Interaction Area */}
           <div className="flex-1 flex flex-col gap-10">
             <div className="flex-1 bg-white/2 border border-white/10 rounded-[3rem] relative overflow-hidden group">
+              {/* Live camera feed — also the source frames for MediaPipe FaceLandmarker */}
+              <video
+                ref={videoRef}
+                muted
+                playsInline
+                className="absolute inset-0 w-full h-full object-cover scale-x-[-1] opacity-70"
+              />
               {/* Animated Backdrop */}
               <div className="absolute inset-0 bg-slate-950/40 flex items-center justify-center">
                 <div className="w-full h-full flex items-center justify-center relative">
                   {/* Waveform Overlay */}
                   <AudioWaves isRecording={isRecording} />
-                  
+
                   {/* Face Guide */}
                   <div className="w-64 h-80 border border-cyan-500/20 rounded-[100px] flex items-center justify-center">
                     <div className="text-center opacity-20">

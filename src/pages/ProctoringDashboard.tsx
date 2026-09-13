@@ -25,6 +25,9 @@ interface LogEntry {
   type: string;
   severity: string;
   tab_switching: number;
+  multiple_face: number;
+  no_face: number;
+  suspicious_activity: number;
 }
 
 export default function ProctoringDashboard() {
@@ -90,6 +93,10 @@ export default function ProctoringDashboard() {
     phone_detected: Monitor,
   };
 
+  const noFaceCount = proctoringLogs.filter(l => l.no_face === 1).length;
+  const multipleFaceCount = proctoringLogs.filter(l => l.multiple_face === 1).length;
+  const gazeDeviationCount = proctoringLogs.filter(l => l.suspicious_activity === 1).length;
+
   // Real proctor_logs rows use 'high'/'medium'/'low' severities (see
   // db.js seed data); events created directly by this app use 'warning'/
   // 'critical'. Map both conventions so real data renders with sensible
@@ -110,14 +117,19 @@ export default function ProctoringDashboard() {
     low: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
   };
 
-  // Build static indicator statuses from session data
+  // Real indicators, backed by MediaPipe FaceLandmarker events persisted from
+  // InterviewScreen.tsx (no_face / multiple_face / suspicious_activity
+  // columns in proctor_logs) — no more hardcoded "Safe" placeholders for
+  // Face Detected / Multiple Faces / Eye Direction. Head Movement and Phone
+  // Presence have no real detector behind them yet, so they're shown as
+  // "Not Monitored" rather than a fake green status.
   const indicators = selectedSession ? [
-    { label: "Face Detected", status: "Safe", icon: Camera, color: "text-green-400", bg: "bg-green-500/10" },
-    { label: "Eye Direction", status: proctoringLogs.some(l => l.type === 'eye_deviation') ? "Warning" : "Safe", icon: Eye, color: proctoringLogs.some(l => l.type === 'eye_deviation') ? "text-orange-400" : "text-green-400", bg: proctoringLogs.some(l => l.type === 'eye_deviation') ? "bg-orange-500/10" : "bg-green-500/10" },
-    { label: "Head Movement", status: "Safe", icon: Move, color: "text-green-400", bg: "bg-green-500/10" },
-    { label: "Multiple Faces", status: proctoringLogs.some(l => l.type === 'multiple_faces') ? "Danger" : "Safe", icon: Users, color: proctoringLogs.some(l => l.type === 'multiple_faces') ? "text-red-400" : "text-green-400", bg: proctoringLogs.some(l => l.type === 'multiple_faces') ? "bg-red-500/10" : "bg-green-500/10" },
+    { label: "Face Detected", status: noFaceCount > 0 ? "Danger" : "Safe", icon: Camera, color: noFaceCount > 0 ? "text-red-400" : "text-green-400", bg: noFaceCount > 0 ? "bg-red-500/10" : "bg-green-500/10" },
+    { label: "Eye Direction", status: gazeDeviationCount > 0 ? "Warning" : "Safe", icon: Eye, color: gazeDeviationCount > 0 ? "text-orange-400" : "text-green-400", bg: gazeDeviationCount > 0 ? "bg-orange-500/10" : "bg-green-500/10" },
+    { label: "Head Movement", status: "Not Monitored", icon: Move, color: "text-slate-500", bg: "bg-slate-500/10" },
+    { label: "Multiple Faces", status: multipleFaceCount > 0 ? "Danger" : "Safe", icon: Users, color: multipleFaceCount > 0 ? "text-red-400" : "text-green-400", bg: multipleFaceCount > 0 ? "bg-red-500/10" : "bg-green-500/10" },
     { label: "Tab Switching", status: selectedSession.tabSwitchCount > 0 ? "Danger" : "Safe", icon: TabIcon, color: selectedSession.tabSwitchCount > 0 ? "text-red-400" : "text-green-400", bg: selectedSession.tabSwitchCount > 0 ? "bg-red-500/10" : "bg-green-500/10" },
-    { label: "Phone Presence", status: proctoringLogs.some(l => l.type === 'phone_detected') ? "Danger" : "Safe", icon: Monitor, color: proctoringLogs.some(l => l.type === 'phone_detected') ? "text-red-400" : "text-green-400", bg: proctoringLogs.some(l => l.type === 'phone_detected') ? "bg-red-500/10" : "bg-green-500/10" },
+    { label: "Phone Presence", status: "Not Monitored", icon: Monitor, color: "text-slate-500", bg: "bg-slate-500/10" },
   ] : [];
 
   return (
@@ -312,7 +324,11 @@ export default function ProctoringDashboard() {
                       </div>
                     ) : (
                       proctoringLogs.map((log, idx) => {
-                        const IconComp = log.tab_switching ? TabIcon : (logIconMap[log.type] ?? AlertTriangle);
+                        const IconComp = log.tab_switching ? TabIcon
+                          : log.multiple_face ? Users
+                          : log.no_face ? UserX
+                          : log.suspicious_activity ? Eye
+                          : (logIconMap[log.type] ?? AlertTriangle);
                         const severityKey = (log.severity || '').toLowerCase();
                         const colorClass = logColorMap[severityKey] ?? 'text-slate-500';
                         const statusClass = statusColorMap[severityKey] ?? 'bg-slate-500/10 text-slate-400 border-slate-500/20';
