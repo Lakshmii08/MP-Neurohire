@@ -13,7 +13,7 @@ A candidate uploads a resume, enrolls a voice sample, and takes a five-question 
 - **Voice biometric enrollment & verification** — a 192-dim ECAPA-TDNN speaker embedding captured at enrollment, re-verified by cosine similarity on every interview answer
 - **AI-generated interview** — Gemini-generated, role-specific questions with live in-browser speech-to-text
 - **Speech analysis** — fluency, clarity, and confidence scores computed from real acoustic features (pitch, energy, silence ratio) and a classifier trained on top of the frozen speaker embeddings — not a static or hardcoded score
-- **Proctoring** — real-time tab-switch detection, persisted to the database immediately and shown on a live recruiter dashboard
+- **Proctoring** — real-time tab-switch detection, plus client-side face/gaze monitoring (MediaPipe FaceLandmarker) that detects no-face, multiple-face, and sustained looking-away conditions — all persisted to the database immediately and shown on a live recruiter dashboard
 - **Final report & analytics** — a combined hiring-recommendation score, plus aggregate charts for recruiters
 
 ## Architecture
@@ -51,6 +51,7 @@ Inside the Python service, a **frozen, pretrained** SpeechBrain `spkrec-ecapa-vo
 | Custom classifier | PyTorch `ConfidenceHead`, trained on `python_ml_service/synthetic_dataset` |
 | Generative AI | Google Gemini (`gemini-2.5-flash`) — optional |
 | Speech-to-text | Browser Web Speech API |
+| Video proctoring | `@mediapipe/tasks-vision` FaceLandmarker (client-side, self-hosted WASM + model) |
 
 ## Getting started
 
@@ -130,7 +131,7 @@ python_ml_service/        FastAPI ML service
 - **Passwords are stored in plaintext** in the `users` table — fine for a local demo, not for production use.
 - **Job matching is rule-based text matching** (skill overlap + a few hard-coded synonyms), not a trained recommender.
 - **Voice-verification calibration used synthetic (TTS-generated) voices**, since no real multi-speaker human corpus was available. `calibrate_voice_threshold.py` accepts real recordings if you have them.
-- **Face / eye / multiple-person proctoring indicators are UI placeholders** — only tab-switch detection is backed by a real signal.
+- **Face presence, multiple-face, and gaze-deviation proctoring are backed by MediaPipe FaceLandmarker** (client-side, no video is uploaded or stored) alongside tab-switch detection; **head-movement and phone-presence indicators remain UI placeholders** ("Not Monitored") since no detector exists for them yet.
 - Resume analysis and interview-question generation depend on an optional Gemini API key; both degrade gracefully without one.
 
 ## License
