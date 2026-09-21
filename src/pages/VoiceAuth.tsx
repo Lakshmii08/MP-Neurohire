@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Mic, CheckCircle2, Zap, AlertCircle, Volume2, Activity,
-  Play, RefreshCw, ShieldCheck, Cpu, ArrowLeft, ArrowRight, Radio
+  Play, RefreshCw, ShieldCheck, Cpu, ArrowLeft, ArrowRight, Radio, ScanFace
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,8 @@ import { useAuth } from "@/contexts/AuthContext";
 import { updateCandidate } from "@/lib/firestore";
 import { toast } from "sonner";
 import { useNavigate, Link } from "react-router-dom";
+import { getFaceLandmarker, analyzeVideoFrame } from "@/lib/videoMonitoring";
+import { computeFaceSignature } from "@/lib/faceIdentity";
 
 const REFERENCE_PHRASE = "The quick brown fox jumps over the lazy dog for NeuroHire assessment";
 
@@ -110,11 +112,51 @@ export default function VoiceAuth() {
   const [testScore, setTestScore] = useState<number | null>(null);
   const [testMatch, setTestMatch] = useState<boolean | null>(null);
 
+  // Facial identity snapshot — captured alongside the voice sample so the
+  // interview can later confirm the same person is answering questions
+  // (mirrors the voice-verification flow, but for face geometry).
+  const [faceCaptureStatus, setFaceCaptureStatus] = useState<'idle' | 'capturing' | 'captured' | 'failed'>('idle');
+  const faceVideoRef = useRef<HTMLVideoElement>(null);
+  const faceCapturePromiseRef = useRef<Promise<number[] | null> | null>(null);
+
   const recognitionRef = useRef<any>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const similarityRef = useRef(0);
   const statusRef = useRef<string>('idle');
+
+  const captureFaceSignature = async (): Promise<number[] | null> => {
+    setFaceCaptureStatus('capturing');
+    let stream: MediaStream | null = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } });
+      const video = faceVideoRef.current;
+      if (!video) throw new Error('Face capture video element not mounted.');
+      video.srcObject = stream;
+      await video.play();
+
+      const landmarker = await getFaceLandmarker();
+      let signature: number[] | null = null;
+      // Try several frames over a few seconds — gives the candidate time to
+      // face the camera, and tolerates a stray blink/no-face frame.
+      for (let attempt = 0; attempt < 8 && !signature; attempt++) {
+        await new Promise(r => setTimeout(r, 400));
+        if (video.readyState < 2) continue;
+        const result = analyzeVideoFrame(landmarker, video, performance.now());
+        if (result.faceCount === 1 && result.landmarks) {
+          signature = computeFaceSignature(result.landmarks);
+        }
+      }
+      setFaceCaptureStatus(signature ? 'captured' : 'failed');
+      return signature;
+    } catch (err) {
+      console.error('Face signature capture failed:', err);
+      setFaceCaptureStatus('failed');
+      return null;
+    } finally {
+      if (stream) stream.getTracks().forEach(t => t.stop());
+    }
+  };
 
   // Check Python ECAPA service status via server proxy (avoids no-cors always-true bug)
   useEffect(() => {
@@ -175,6 +217,10 @@ export default function VoiceAuth() {
     setAudioUrl(null);
     setTestScore(null);
     setTestMatch(null);
+
+    // Runs in parallel with speaking the phrase — same "look at the camera"
+    // moment doubles as the facial-identity enrollment snapshot.
+    faceCapturePromiseRef.current = captureFaceSignature();
 
     let accumulatedTranscript = '';
 
@@ -286,6 +332,13 @@ export default function VoiceAuth() {
         formData.append('id', currentUser.uid);
         formData.append('score', score.toString());
 
+        const faceSignature = faceCapturePromiseRef.current ? await faceCapturePromiseRef.current : null;
+        if (faceSignature) {
+          formData.append('face_signature', JSON.stringify(faceSignature));
+        } else {
+          toast.warning("Couldn't capture a clear face snapshot — identity verification during the interview will be skipped for this account.");
+        }
+
         const res = await fetch('/api/auth/verify-voice', { method: 'POST', body: formData });
         const resData = await res.json();
 
@@ -380,6 +433,9 @@ export default function VoiceAuth() {
       <div className="absolute -z-10 top-[-200px] left-[-100px] w-[600px] h-[600px] bg-blue-600/10 rounded-full blur-[140px]" />
       <div className="absolute -z-10 bottom-[-200px] right-[-100px] w-[600px] h-[600px] bg-cyan-600/10 rounded-full blur-[140px]" />
 
+      {/* Source frames for the facial-identity snapshot (see captureFaceSignature) */}
+      <video ref={faceVideoRef} muted playsInline className="absolute w-px h-px opacity-0 pointer-events-none" />
+
       <div className="max-w-6xl mx-auto space-y-8 relative z-10">
         {/* Header */}
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 border-b border-white/10 pb-6">
@@ -449,6 +505,23 @@ export default function VoiceAuth() {
                 </span>
                 <Badge variant="outline" className="bg-white/5 text-slate-400 border-white/10 text-[10px]">
                   Threshold: 50%
+                </Badge>
+              </div>
+
+              {/* Facial identity snapshot status */}
+              <div className="flex items-center justify-between p-3 rounded-2xl bg-white/2 border border-white/5">
+                <span className="text-xs font-bold text-slate-300 flex items-center gap-2">
+                  <ScanFace className="h-4 w-4 text-cyan-400" /> Facial Identity Snapshot
+                </span>
+                <Badge className={
+                  faceCaptureStatus === 'captured' ? "bg-green-500/10 text-green-400 border-green-500/20" :
+                  faceCaptureStatus === 'capturing' ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/20 animate-pulse" :
+                  faceCaptureStatus === 'failed' ? "bg-amber-500/10 text-amber-400 border-amber-500/20" :
+                  "bg-slate-500/10 text-slate-400 border-slate-500/20"
+                }>
+                  {faceCaptureStatus === 'captured' ? 'Captured' :
+                   faceCaptureStatus === 'capturing' ? 'Capturing...' :
+                   faceCaptureStatus === 'failed' ? 'Not Captured' : 'Idle'}
                 </Badge>
               </div>
 

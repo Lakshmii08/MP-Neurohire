@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Mic, MicOff, Settings, Timer, AlertTriangle,
-  CheckCircle, Zap, ArrowRight, Activity, Volume2, Shield, Camera, UserX, Users, Eye
+  CheckCircle, Zap, ArrowRight, Activity, Volume2, Shield, Camera, UserX, Users, Eye, ScanFace
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +11,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { generateInterviewQuestions, analyzeSpeechFromAudio, type InterviewQuestion, type SpeechAnalysisResult } from "@/lib/gemini";
 import { createInterviewSession, updateInterviewSession, type InterviewAnswer } from "@/lib/firestore";
 import { getFaceLandmarker, analyzeVideoFrame, SustainedCondition } from "@/lib/videoMonitoring";
+import { computeFaceSignature, faceSimilarity, FACE_MATCH_THRESHOLD } from "@/lib/faceIdentity";
 import { toast } from "sonner";
 
 // ── Audio Visualizer Component ──────────────────────────────────────────
@@ -102,7 +103,15 @@ export default function InterviewScreen() {
   // and penalized, shown here as a running log + count so the candidate can
   // see it accumulate live instead of only as a toast that disappears.
   const [videoAlertCount, setVideoAlertCount] = useState(0);
-  const [videoViolationLog, setVideoViolationLog] = useState<{ label: string; time: string; icon: 'no_face' | 'multiple_face' | 'gaze' }[]>([]);
+  const [videoViolationLog, setVideoViolationLog] = useState<{ label: string; time: string; icon: 'no_face' | 'multiple_face' | 'gaze' | 'identity' }[]>([]);
+  // Live facial-identity continuity check — compares the face on camera
+  // against the geometric signature captured at login (see VoiceAuth.tsx /
+  // src/lib/faceIdentity.ts). null means either no enrolled signature exists
+  // (older account, or capture failed at enrollment) or no single face is
+  // currently in frame to compare.
+  const [liveIdentityMatch, setLiveIdentityMatch] = useState<number | null>(null);
+  const [identityMismatchPenalty, setIdentityMismatchPenalty] = useState(0);
+  const enrolledFaceSignatureRef = useRef<number[] | null>(null);
 
   const [liveMetrics, setLiveMetrics] = useState({
     confidence: 0,
@@ -130,6 +139,7 @@ export default function InterviewScreen() {
   const noFaceConditionRef = useRef(new SustainedCondition(3));
   const multipleFaceConditionRef = useRef(new SustainedCondition(3));
   const gazeAwayConditionRef = useRef(new SustainedCondition(4));
+  const identityMismatchConditionRef = useRef(new SustainedCondition(5));
 
   // ── Load questions ──────────────────────────────────────────────────
   useEffect(() => {
@@ -232,6 +242,21 @@ export default function InterviewScreen() {
 
     const start = async () => {
       try {
+        // Fetch the facial-identity signature captured at login (if any) once,
+        // up front — every subsequent tick compares against it purely
+        // client-side rather than posting a frame to the server every 700ms.
+        if (currentUser?.uid) {
+          try {
+            const res = await fetch(`/api/auth/face-signature/${currentUser.uid}`);
+            const data = await res.json();
+            if (data.success && Array.isArray(data.signature)) {
+              enrolledFaceSignatureRef.current = data.signature;
+            }
+          } catch (err) {
+            console.warn("Could not fetch enrolled face signature:", err);
+          }
+        }
+
         const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } });
         if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
         videoStreamRef.current = stream;
@@ -248,12 +273,12 @@ export default function InterviewScreen() {
           const video = videoRef.current;
           if (!video || video.readyState < 2) return;
 
-          const { faceCount, gazeDeviation } = analyzeVideoFrame(landmarker, video, performance.now());
+          const { faceCount, gazeDeviation, landmarks } = analyzeVideoFrame(landmarker, video, performance.now());
           const isGazeAway = faceCount === 1 && gazeDeviation > 0.6;
           setLiveFaceCount(faceCount);
           setLiveGazeAway(isGazeAway);
 
-          const logViolation = (label: string, icon: 'no_face' | 'multiple_face' | 'gaze') => {
+          const logViolation = (label: string, icon: 'no_face' | 'multiple_face' | 'gaze' | 'identity') => {
             setVideoAlertCount(prev => prev + 1);
             setVideoViolationLog(prev => [{ label, time: new Date().toLocaleTimeString(), icon }, ...prev].slice(0, 5));
           };
@@ -275,6 +300,27 @@ export default function InterviewScreen() {
             reportEvent('Sustained Gaze Deviation Detected', { suspicious_activity: true });
             logViolation('Looking Away From Screen', 'gaze');
             toast.warning("⚠️ Please keep looking at the screen.");
+          }
+
+          // Facial identity continuity — is this still the person who
+          // enrolled at login? Only meaningful with exactly one face in
+          // frame and an enrolled signature to compare against.
+          let isIdentityMismatch = false;
+          let currentSimilarity: number | null = null;
+          if (faceCount === 1 && landmarks && enrolledFaceSignatureRef.current) {
+            const liveSignature = computeFaceSignature(landmarks);
+            currentSimilarity = faceSimilarity(enrolledFaceSignatureRef.current, liveSignature);
+            setLiveIdentityMatch(currentSimilarity);
+            isIdentityMismatch = currentSimilarity < FACE_MATCH_THRESHOLD;
+          } else {
+            setLiveIdentityMatch(null);
+          }
+          if (identityMismatchConditionRef.current.update(isIdentityMismatch)) {
+            setIdentityMismatchPenalty(prev => prev + 2);
+            const pct = Math.round((currentSimilarity ?? 0) * 100);
+            reportEvent(`Face Identity Mismatch (${pct}% similarity)`, { suspicious_activity: true });
+            logViolation(`Face Identity Mismatch (${pct}%)`, 'identity');
+            toast.error(`🚨 SECURITY ALERT: Face on camera doesn't match your enrolled identity! (${pct}%)`, { duration: 5000 });
           }
         }, 700);
       } catch (err) {
@@ -490,7 +536,7 @@ export default function InterviewScreen() {
         setProcessingAnswer(false);
       } else {
         const avgSpeechScore = Math.round(allAnswers.reduce((sum, a) => sum + a.speechAnalysis.score, 0) / allAnswers.length);
-        const proctoringScore = Math.max(0, 100 - tabSwitchCount * 15 - voiceSecurityPenalty * 15 - videoSecurityPenalty * 10);
+        const proctoringScore = Math.max(0, 100 - tabSwitchCount * 15 - voiceSecurityPenalty * 15 - videoSecurityPenalty * 10 - identityMismatchPenalty * 15);
         const resumeScore = candidateData?.resumeScore ?? 70;
         const avgVoiceMatch = currentVoiceScores.length > 0 
           ? Math.round(currentVoiceScores.reduce((a, b) => a + b, 0) / currentVoiceScores.length)
@@ -666,10 +712,20 @@ export default function InterviewScreen() {
                           <Eye className="h-16 w-16 mx-auto mb-4 text-orange-400" />
                           <p className="text-[10px] font-bold uppercase tracking-widest font-mono text-orange-400">Looking Away</p>
                         </>
+                      ) : liveIdentityMatch !== null && liveIdentityMatch < FACE_MATCH_THRESHOLD ? (
+                        <>
+                          <ScanFace className="h-16 w-16 mx-auto mb-4 text-red-400 animate-pulse" />
+                          <p className="text-[10px] font-bold uppercase tracking-widest font-mono text-red-400">
+                            Identity Mismatch ({Math.round(liveIdentityMatch * 100)}%)
+                          </p>
+                        </>
                       ) : (
                         <>
                           <Camera className="h-16 w-16 mx-auto mb-4 text-green-400" />
                           <p className="text-[10px] font-bold uppercase tracking-widest font-mono text-green-400">Face Detected</p>
+                          {liveIdentityMatch !== null && (
+                            <p className="text-[9px] font-mono text-green-400/70 mt-1">Identity {Math.round(liveIdentityMatch * 100)}% match</p>
+                          )}
                         </>
                       )}
                     </div>
@@ -695,7 +751,7 @@ export default function InterviewScreen() {
                     </p>
                     <div className="space-y-1.5">
                       {videoViolationLog.slice(0, 3).map((v, i) => {
-                        const VIcon = v.icon === 'no_face' ? UserX : v.icon === 'multiple_face' ? Users : Eye;
+                        const VIcon = v.icon === 'no_face' ? UserX : v.icon === 'multiple_face' ? Users : v.icon === 'identity' ? ScanFace : Eye;
                         return (
                           <div key={i} className="flex items-center gap-2 text-[10px] text-slate-300">
                             <VIcon className="h-3 w-3 text-red-400 flex-shrink-0" />
