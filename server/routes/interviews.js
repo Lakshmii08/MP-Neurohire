@@ -40,11 +40,15 @@ router.post('/result', (req, res) => {
       (user_id, session_id, questions, answers, speech_score, confidence_score, fluency_score, clarity_score)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
       
+    // question/answer arrive pre-serialized as full JSON arrays (one entry
+    // per interview question) rather than a single item, so every answer
+    // — not just the first — survives a page reload or a recruiter viewing
+    // the report in a separate browser session.
     const info = stmt.run(
-      user_id, 
+      user_id,
       session_id || 'session_' + Date.now(),
-      JSON.stringify([question]),
-      JSON.stringify([answer]),
+      typeof question === 'string' ? question : JSON.stringify([question]),
+      typeof answer === 'string' ? answer : JSON.stringify([answer]),
       score || 0,
       speech_metrics?.confidence || 0,
       speech_metrics?.fluency || 0,
@@ -240,6 +244,60 @@ router.post('/analyze-speech', upload.single('answer_audio'), async (req, res) =
     if (audio_path && fs.existsSync(audio_path)) {
       try { fs.unlinkSync(audio_path); } catch (e) { /* ignore */ }
     }
+  }
+});
+
+// Full report data for a candidate: the latest interview's real per-question
+// breakdown (not just the first question) plus current scores. Used by
+// CandidateReport.tsx when there's no in-memory session to read from — i.e.
+// any time the report is opened in a different browser session than the one
+// that ran the interview (recruiter view, or the candidate reloading the
+// page), since the in-memory session store in src/lib/firestore.ts doesn't
+// survive either of those.
+router.get('/report/:userId', (req, res) => {
+  try {
+    const { userId } = req.params;
+    const interview = db.prepare(
+      `SELECT * FROM interviews WHERE user_id = ? ORDER BY id DESC LIMIT 1`
+    ).get(userId);
+
+    if (!interview) {
+      return res.json({ success: true, interview: null });
+    }
+
+    let questions = [];
+    let answers = [];
+    try { questions = JSON.parse(interview.questions || '[]'); } catch { /* legacy single-string format */ questions = interview.questions ? [interview.questions] : []; }
+    try { answers = JSON.parse(interview.answers || '[]'); } catch { answers = interview.answers ? [interview.answers] : []; }
+
+    // Rows saved before per-question answers were stored as full objects
+    // (question/transcript/speechAnalysis/relevance) only have a plain
+    // transcript string here — normalize those into the same shape so the
+    // report page doesn't crash reading a missing speechAnalysis/relevance.
+    answers = answers.map((a, i) => {
+      if (a && typeof a === 'object' && 'speechAnalysis' in a) return a;
+      const transcript = typeof a === 'string' ? a : '';
+      const hasRealAnswer = transcript.trim() && transcript.trim() !== '(No response captured)';
+      return {
+        question: questions[i] || `Question ${i + 1}`,
+        transcript,
+        speechAnalysis: { transcript, confidence: 0, fluency: 0, clarity: 0, keywords: [], score: interview.speech_score || 0, feedback: 'Detailed per-answer analysis unavailable for this legacy record.' },
+        relevance: { score: 0, verdict: hasRealAnswer ? 'Partially Relevant' : 'Empty', feedback: 'Relevance was not evaluated for this legacy record.' },
+      };
+    });
+
+    res.json({
+      success: true,
+      interview: {
+        id: interview.id,
+        session_id: interview.session_id,
+        questions,
+        answers,
+        speech_score: interview.speech_score,
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

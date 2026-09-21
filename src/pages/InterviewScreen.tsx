@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { generateInterviewQuestions, analyzeSpeechFromAudio, type InterviewQuestion, type SpeechAnalysisResult } from "@/lib/gemini";
+import { generateInterviewQuestions, analyzeSpeechFromAudio, evaluateAnswerRelevance, type InterviewQuestion, type SpeechAnalysisResult } from "@/lib/gemini";
 import { createInterviewSession, updateInterviewSession, type InterviewAnswer } from "@/lib/firestore";
 import { getFaceLandmarker, analyzeVideoFrame, SustainedCondition } from "@/lib/videoMonitoring";
 import { computeFaceSignature, faceSimilarity, FACE_MATCH_THRESHOLD } from "@/lib/faceIdentity";
@@ -520,7 +520,12 @@ export default function InterviewScreen() {
         avgSttConfidence
       );
 
-      const newAnswer: InterviewAnswer = { question, transcript: fullAnswer, speechAnalysis };
+      // Separate from speech analysis: does the content of the answer
+      // actually address the question, regardless of how fluently it was
+      // spoken? Graded from the transcript alone.
+      const relevance = await evaluateAnswerRelevance(question, fullAnswer);
+
+      const newAnswer: InterviewAnswer = { question, transcript: fullAnswer, speechAnalysis, relevance };
       const allAnswers = [...answers, newAnswer];
       setAnswers(allAnswers);
 
@@ -538,10 +543,14 @@ export default function InterviewScreen() {
         const avgSpeechScore = Math.round(allAnswers.reduce((sum, a) => sum + a.speechAnalysis.score, 0) / allAnswers.length);
         const proctoringScore = Math.max(0, 100 - tabSwitchCount * 15 - voiceSecurityPenalty * 15 - videoSecurityPenalty * 10 - identityMismatchPenalty * 15);
         const resumeScore = candidateData?.resumeScore ?? 70;
-        const avgVoiceMatch = currentVoiceScores.length > 0 
+        // If no interview-time voice sample was ever successfully verified
+        // (mic never worked, every answer was silent, ECAPA service was
+        // down), the score must read 0 — falling back to the enrollment
+        // similarity (or a hardcoded default) would misrepresent an
+        // unverified interview as a verified one.
+        const voiceScore = currentVoiceScores.length > 0
           ? Math.round(currentVoiceScores.reduce((a, b) => a + b, 0) / currentVoiceScores.length)
-          : candidateData?.voiceSimilarity ?? 80;
-        const voiceScore = avgVoiceMatch;
+          : 0;
         const overallScore = Math.round((resumeScore * 0.3 + avgSpeechScore * 0.4 + voiceScore * 0.2 + proctoringScore * 0.1));
 
         if (sessionId) {

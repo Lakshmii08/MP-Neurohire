@@ -3,19 +3,33 @@ import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import {
   Zap, Download, Printer, FileText, Mic, UserCheck,
-  ShieldCheck, Brain, ArrowLeft, Loader2
+  ShieldCheck, Brain, ArrowLeft, Loader2, Layout as TabIcon,
+  UserX, Users, Eye, ScanFace, AlertTriangle
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { getInterviewSession, getCandidate, type InterviewSession, type CandidateProfile } from "@/lib/firestore";
+import { getInterviewSession, getCandidate, type InterviewSession, type CandidateProfile, type InterviewAnswer } from "@/lib/firestore";
+
+interface ViolationLog {
+  user_id: number;
+  event: string;
+  time: string;
+  type: string;
+  severity: string;
+  tab_switching: number;
+  multiple_face: number;
+  no_face: number;
+  suspicious_activity: number;
+}
 
 export default function CandidateReport() {
   const { candidateId } = useParams<{ candidateId: string }>();
   const [session, setSession] = useState<InterviewSession | null>(null);
   const [candidate, setCandidate] = useState<CandidateProfile | null>(null);
+  const [violations, setViolations] = useState<ViolationLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,7 +43,11 @@ export default function CandidateReport() {
         if (sess) {
           cand = await getCandidate(sess.candidateId);
         } else {
-          // Attempt to fetch from backend profile / candidates DB
+          // No in-memory session (page reload, or a recruiter opening this
+          // report in a different browser entirely) — candidateId here is
+          // the raw user_id (see ProctoringDashboard's report link), so
+          // reconstruct from the database instead, including the real
+          // per-question Q&A rather than an empty placeholder.
           const res = await fetch(`/api/candidates/profile/${candidateId}`);
           if (res.ok) {
             const data = await res.json();
@@ -46,18 +64,41 @@ export default function CandidateReport() {
                 resumeScore: c.score || 88,
               };
 
+              let reportAnswers: InterviewAnswer[] = [];
+              let reportQuestions = ["Technical Architecture and Experience", "Core Problem Solving Methodology"];
+              let realSpeechScore: number | null = null;
+              try {
+                const repRes = await fetch(`/api/interviews/report/${candidateId}`);
+                if (repRes.ok) {
+                  const repData = await repRes.json();
+                  if (repData.success && repData.interview) {
+                    if (Array.isArray(repData.interview.answers) && repData.interview.answers.length > 0) {
+                      reportAnswers = repData.interview.answers;
+                    }
+                    if (Array.isArray(repData.interview.questions) && repData.interview.questions.length > 0) {
+                      reportQuestions = repData.interview.questions;
+                    }
+                    if (typeof repData.interview.speech_score === 'number') {
+                      realSpeechScore = repData.interview.speech_score;
+                    }
+                  }
+                }
+              } catch (e) {
+                console.error('Failed to fetch full interview record:', e);
+              }
+
               sess = {
                 id: candidateId,
                 candidateId: String(c.user_id),
                 candidateName: `${c.first_name || ''} ${c.last_name || ''}`.trim() || 'Candidate',
                 role: c.role_applied || 'Software Engineer',
-                questions: ["Technical Architecture and Experience", "Core Problem Solving Methodology"],
-                answers: [],
+                questions: reportQuestions,
+                answers: reportAnswers,
                 overallScore: c.score || 88,
                 resumeScore: c.score || 88,
-                speechScore: c.voice_score || 92,
-                voiceScore: c.voice_score || 92,
-                proctoringScore: c.proctor_score || 100,
+                speechScore: realSpeechScore ?? (c.score || 88),
+                voiceScore: c.voice_score ?? 0,
+                proctoringScore: c.proctor_score ?? 100,
                 status: 'completed' as const,
                 tabSwitchCount: 0,
                 completedAt: { seconds: Math.floor(Date.now() / 1000) }
@@ -69,6 +110,26 @@ export default function CandidateReport() {
         if (!sess) {
           setError("Candidate report not found.");
           return;
+        }
+
+        // Every detected violation for this candidate, straight from
+        // proctor_logs — tab switches, no-face/multiple-face/gaze from
+        // MediaPipe proctoring, voice mismatches, and facial identity
+        // mismatches all land here regardless of which path built `sess`.
+        try {
+          const logsRes = await fetch('/api/logs');
+          if (logsRes.ok) {
+            const logs = await logsRes.json();
+            const mine: ViolationLog[] = (Array.isArray(logs) ? logs : [])
+              .filter((l: any) => String(l.user_id) === String(sess!.candidateId));
+            setViolations(mine);
+            const realTabSwitches = mine.filter(l => l.tab_switching === 1).length;
+            if (sess.tabSwitchCount === 0 && realTabSwitches > 0) {
+              sess = { ...sess, tabSwitchCount: realTabSwitches };
+            }
+          }
+        } catch (e) {
+          console.error('Failed to fetch proctoring logs:', e);
         }
 
         setSession(sess);
@@ -116,6 +177,27 @@ export default function CandidateReport() {
     "Recommended": "bg-green-100 text-green-700",
     "Moderate": "bg-amber-100 text-amber-700",
     "Needs Review": "bg-red-100 text-red-700",
+  };
+
+  // Every distinct violation type detected during the interview, counted
+  // from the same proctor_logs rows the recruiter's Proctoring Dashboard
+  // reads — nothing here is summarized or dropped.
+  const tabSwitchCount = violations.filter(v => v.tab_switching === 1).length;
+  const noFaceCount = violations.filter(v => v.no_face === 1).length;
+  const multipleFaceCount = violations.filter(v => v.multiple_face === 1).length;
+  const gazeCount = violations.filter(v => v.suspicious_activity === 1 && v.event?.toLowerCase().includes('gaze')).length;
+  const identityMismatchCount = violations.filter(v => v.event?.toLowerCase().includes('identity mismatch')).length;
+  const voiceMismatchCount = violations.filter(v => v.event?.toLowerCase().includes('voiceprint mismatch')).length;
+
+  const getViolationIcon = (v: ViolationLog) => {
+    if (v.tab_switching) return TabIcon;
+    if (v.no_face) return UserX;
+    if (v.multiple_face) return Users;
+    const eventLower = (v.event || '').toLowerCase();
+    if (eventLower.includes('identity mismatch')) return ScanFace;
+    if (eventLower.includes('voiceprint mismatch')) return Mic;
+    if (eventLower.includes('gaze')) return Eye;
+    return AlertTriangle;
   };
 
   return (
@@ -211,9 +293,20 @@ export default function CandidateReport() {
                   <CardContent className="p-6 space-y-4">
                     <div className="flex items-start justify-between gap-4">
                       <p className="text-sm font-bold text-slate-700">Q{idx + 1}: {ans.question}</p>
-                      <Badge className="bg-blue-50 text-blue-600 border-none font-bold shrink-0">
-                        {ans.speechAnalysis.score}%
-                      </Badge>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {ans.relevance && (
+                          <Badge className={
+                            ans.relevance.verdict === 'Relevant' ? "bg-green-50 text-green-700 border-none font-bold" :
+                            ans.relevance.verdict === 'Partially Relevant' ? "bg-amber-50 text-amber-700 border-none font-bold" :
+                            "bg-red-50 text-red-700 border-none font-bold"
+                          }>
+                            {ans.relevance.verdict}
+                          </Badge>
+                        )}
+                        <Badge className="bg-blue-50 text-blue-600 border-none font-bold">
+                          {ans.speechAnalysis.score}%
+                        </Badge>
+                      </div>
                     </div>
                     <div className="bg-slate-50 rounded-xl p-4">
                       <p className="text-xs font-bold text-slate-400 uppercase mb-1">Candidate Response</p>
@@ -221,11 +314,12 @@ export default function CandidateReport() {
                         "{ans.transcript || 'No response captured'}"
                       </p>
                     </div>
-                    <div className="grid grid-cols-3 gap-4">
+                    <div className="grid grid-cols-4 gap-4">
                       {[
                         { label: "Confidence", val: ans.speechAnalysis.confidence },
                         { label: "Fluency", val: ans.speechAnalysis.fluency },
                         { label: "Clarity", val: ans.speechAnalysis.clarity },
+                        { label: "Relevance", val: ans.relevance?.score ?? 0 },
                       ].map((m, i) => (
                         <div key={i} className="text-center p-3 bg-slate-50 rounded-xl">
                           <p className="text-[10px] font-bold text-slate-400 uppercase">{m.label}</p>
@@ -245,6 +339,11 @@ export default function CandidateReport() {
                         AI Feedback: {ans.speechAnalysis.feedback}
                       </p>
                     )}
+                    {ans.relevance?.feedback && (
+                      <p className="text-xs text-slate-500 italic border-l-2 border-purple-200 pl-3">
+                        Answer Review: {ans.relevance.feedback}
+                      </p>
+                    )}
                   </CardContent>
                 </Card>
               ))}
@@ -261,8 +360,13 @@ export default function CandidateReport() {
             <Card className="border-slate-100 shadow-sm">
               <CardContent className="p-0">
                 {[
-                  { event: "Tab Switch Detected", count: session.tabSwitchCount, status: session.tabSwitchCount === 0 ? "Clean" : "Warning" },
-                  { event: "Voice Verification Match", count: `${session.voiceScore}%`, status: session.voiceScore >= 70 ? "Passed" : "Failed" },
+                  { event: "Tab Switch Detected", count: tabSwitchCount, status: tabSwitchCount === 0 ? "Clean" : "Warning" },
+                  { event: "Face Not Visible", count: noFaceCount, status: noFaceCount === 0 ? "Clean" : "Warning" },
+                  { event: "Multiple Faces Detected", count: multipleFaceCount, status: multipleFaceCount === 0 ? "Clean" : "Warning" },
+                  { event: "Gaze Deviation", count: gazeCount, status: gazeCount === 0 ? "Clean" : "Warning" },
+                  { event: "Facial Identity Mismatch", count: identityMismatchCount, status: identityMismatchCount === 0 ? "Clean" : "Warning" },
+                  { event: "Voice Mismatch", count: voiceMismatchCount, status: voiceMismatchCount === 0 ? "Clean" : "Warning" },
+                  { event: "Voice Verification Match", count: `${session.voiceScore}%`, status: session.voiceScore === 0 ? "Not Verified" : session.voiceScore >= 70 ? "Passed" : "Failed" },
                   { event: "Session Completed", count: session.answers.length, status: "Verified" },
                 ].map((item, idx) => (
                   <div key={idx} className="px-6 py-4 border-b last:border-0 flex justify-between items-center group cursor-default hover:bg-slate-50 transition-colors">
@@ -300,6 +404,47 @@ export default function CandidateReport() {
               </div>
             </Card>
           </div>
+        </section>
+
+        {/* Full Violation Timeline */}
+        <section className="space-y-6 pt-4">
+          <h3 className="text-lg font-heading font-bold flex items-center gap-2">
+            <AlertTriangle className="h-5 w-5 text-amber-500" /> All Violations Detected
+            {violations.length > 0 && (
+              <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-mono">{violations.length}</span>
+            )}
+          </h3>
+          <Card className="border-slate-100 shadow-sm">
+            <CardContent className="p-0 max-h-96 overflow-y-auto">
+              {violations.length === 0 ? (
+                <div className="px-6 py-8 text-center">
+                  <p className="text-slate-400 text-sm font-medium">No violations were detected during this interview.</p>
+                </div>
+              ) : (
+                violations.map((v, idx) => {
+                  const IconComp = getViolationIcon(v);
+                  const severityKey = (v.severity || '').toLowerCase();
+                  const severityColor = severityKey === 'high' || severityKey === 'critical' ? "bg-red-100 text-red-700"
+                    : severityKey === 'warning' || severityKey === 'medium' ? "bg-amber-100 text-amber-700"
+                    : "bg-slate-100 text-slate-500";
+                  return (
+                    <div key={idx} className="px-6 py-4 border-b last:border-0 flex items-center justify-between gap-4 hover:bg-slate-50 transition-colors">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 rounded-lg bg-slate-50">
+                          <IconComp className="h-4 w-4 text-slate-500" />
+                        </div>
+                        <span className="text-sm font-medium text-slate-700">{v.event}</span>
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <span className="text-xs font-mono text-slate-400">{v.time}</span>
+                        <Badge className={`${severityColor} border-none font-bold uppercase text-[9px]`}>{v.severity || 'info'}</Badge>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </CardContent>
+          </Card>
         </section>
 
         <footer className="pt-20 text-center space-y-4">
