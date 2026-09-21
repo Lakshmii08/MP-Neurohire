@@ -2,13 +2,14 @@ import { useState, useEffect } from "react";
 import { motion } from "motion/react";
 import {
   ShieldAlert, Eye, Layout as TabIcon, Users, Activity,
-  UserX, Camera, RefreshCw, Flag, AlertTriangle, Monitor,
-  LayoutDashboard, BarChart3, Video, FileText, ScanFace
+  UserX, Camera, RefreshCw, Flag, AlertTriangle, Monitor, ScanFace
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
+import RecruiterSidebar from "@/components/RecruiterSidebar";
 
 interface Session {
   id: string; // user_id — correlates with proctor_logs.user_id
@@ -31,10 +32,19 @@ interface LogEntry {
 }
 
 export default function ProctoringDashboard() {
+  const { currentUser, loading: authLoading } = useAuth();
+  const navigate = useNavigate();
   const [interviews, setInterviews] = useState<Session[]>([]);
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [allLogs, setAllLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!currentUser || (currentUser.role !== 'recruiter' && currentUser.role !== 'admin')) {
+      navigate('/recruiter/auth');
+    }
+  }, [currentUser, authLoading, navigate]);
 
   // Real candidate list + real proctor_logs from the database — tab-switch
   // events are persisted the moment they happen (see InterviewScreen.tsx +
@@ -138,37 +148,13 @@ export default function ProctoringDashboard() {
   ] : [];
 
   return (
-    <div className="min-h-screen bg-[#020617] p-8 text-slate-100 flex flex-col gap-8 relative overflow-x-hidden">
+    <div className="flex h-screen bg-[#020617] text-slate-100 overflow-hidden relative">
       <div className="absolute -z-10 top-[-200px] right-[-100px] w-[500px] h-[500px] bg-red-600/5 rounded-full blur-[120px]" />
       <div className="absolute -z-10 bottom-[-200px] left-[-100px] w-[500px] h-[500px] bg-blue-600/5 rounded-full blur-[120px]" />
 
-      {/* Sidebar */}
-      <aside className="fixed left-0 top-0 h-full w-20 flex flex-col items-center py-8 gap-10 bg-slate-950/50 border-r border-white/5 backdrop-blur-xl z-30">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 via-purple-600 to-cyan-400 flex items-center justify-center shadow-lg shadow-blue-500/20">
-          <div className="w-5 h-5 border-2 border-white rounded-full flex items-center justify-center">
-            <div className="w-1 h-1 bg-white rounded-full" />
-          </div>
-        </div>
-        <nav className="flex flex-col gap-6">
-          <Link to="/recruiter" className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors" title="Dashboard">
-            <LayoutDashboard className="w-6 h-6" />
-          </Link>
-          <Link to="/recruiter/proctoring" className="p-3 rounded-xl bg-white/10 text-cyan-400 shadow-inner transition-all" title="Proctoring">
-            <Video className="w-6 h-6" />
-          </Link>
-          <div className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors cursor-pointer" title="Reports">
-            <FileText className="w-6 h-6" />
-          </div>
-          <div className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors cursor-pointer" title="Candidates">
-            <Users className="w-6 h-6" />
-          </div>
-          <Link to="/recruiter/analytics" className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors" title="Analytics">
-            <BarChart3 className="w-6 h-6" />
-          </Link>
-        </nav>
-      </aside>
+      <RecruiterSidebar />
 
-      <div className="ml-20 space-y-8">
+      <main className="flex-1 overflow-y-auto p-8 space-y-8">
         {/* Header */}
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 border-b border-white/5 pb-8">
           <div className="space-y-1">
@@ -401,7 +387,7 @@ export default function ProctoringDashboard() {
             </div>
           </div>
         )}
-      </div>
+      </main>
     </div>
   );
 }

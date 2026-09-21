@@ -89,6 +89,20 @@ db.exec(`
     status TEXT DEFAULT 'Open'
   );
 
+  -- Real candidate-to-job applications, recorded when a candidate clicks a
+  -- recommended job to start that role's interview. Replaces jobs.applicants
+  -- (which was seeded with fake static numbers) as the source of truth for
+  -- "who applied to this job".
+  CREATE TABLE IF NOT EXISTS job_applications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    candidate_id INTEGER NOT NULL,
+    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(job_id, candidate_id),
+    FOREIGN KEY(job_id) REFERENCES jobs(id),
+    FOREIGN KEY(candidate_id) REFERENCES candidates(id)
+  );
+
   CREATE TABLE IF NOT EXISTS interviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,

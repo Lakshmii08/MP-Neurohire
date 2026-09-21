@@ -30,6 +30,24 @@ export default function CandidateDashboard() {
 
   const [recommendedJobs, setRecommendedJobs] = useState<any[]>([]);
 
+  // Records a real application (job_applications row) before navigating to
+  // the interview, so the recruiter's "View Applicants" page for this job
+  // shows who actually applied instead of a fake static counter.
+  const handleApplyAndStart = async (job: any) => {
+    if (currentUser && job.id) {
+      try {
+        await fetch(`/api/jobs/${job.id}/apply`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: currentUser.uid }),
+        });
+      } catch (err) {
+        console.error('Failed to record job application:', err);
+      }
+    }
+    navigate(`/candidate/interview?role=${encodeURIComponent(job.title)}`);
+  };
+
   useEffect(() => {
     if (!currentUser) return;
     fetch(`/api/candidates/matches/${currentUser.uid}`)
@@ -382,12 +400,13 @@ export default function CandidateDashboard() {
                       )}
                     </div>
 
-                    <Link
-                      to={`/candidate/interview?role=${encodeURIComponent(job.title)}`}
+                    <button
+                      type="button"
+                      onClick={() => handleApplyAndStart(job)}
                       className="w-full bg-white/5 hover:bg-blue-600 text-white font-bold py-2.5 rounded-xl text-[10px] uppercase tracking-wider text-center transition-all flex items-center justify-center gap-1.5 border border-white/5 hover:border-transparent group-hover:shadow-lg group-hover:shadow-blue-600/20"
                     >
                       <Zap className="h-3 w-3" /> Start Interview
-                    </Link>
+                    </button>
                   </div>
                 ))
               )}
