@@ -242,6 +242,82 @@ function transcriptOnlySpeechHeuristic(transcript: string, avgConfidence: number
   };
 }
 
+// ── Answer relevance / appropriateness ──────────────────────────────────
+// Separate from speech analysis (which grades HOW the candidate spoke —
+// fluency, clarity, confidence): this grades WHETHER what they said actually
+// addresses the question asked, purely from the transcript.
+
+export interface AnswerRelevance {
+  score: number; // 0-100
+  verdict: 'Relevant' | 'Partially Relevant' | 'Off-topic' | 'Empty';
+  feedback: string;
+}
+
+export async function evaluateAnswerRelevance(question: string, transcript: string): Promise<AnswerRelevance> {
+  const trimmed = transcript.trim();
+  if (!trimmed || trimmed === '(No response captured)') {
+    return { score: 0, verdict: 'Empty', feedback: 'No answer was given for this question.' };
+  }
+
+  try {
+    const ai = getAI();
+    const prompt = `You are an expert technical interviewer grading whether a candidate's spoken answer actually addresses the interview question asked — not how well they speak.
+
+Question: "${question}"
+Candidate's transcribed answer: "${trimmed}"
+
+Respond ONLY with a valid JSON object:
+{"score": 0-100, "verdict": "Relevant" | "Partially Relevant" | "Off-topic", "feedback": "one sentence explaining why"}
+
+Score guide: 85-100 directly and substantively answers the question; 50-84 partially addresses it, is vague, or generic; 0-49 does not address the question, is nonsensical, or just repeats the question back.`;
+
+    const result = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+    const cleaned = result.text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    return {
+      score: Math.max(0, Math.min(100, Math.round(parsed.score))),
+      verdict: parsed.verdict,
+      feedback: parsed.feedback,
+    };
+  } catch (error) {
+    console.error('Gemini relevance evaluation error, using local heuristic:', error);
+    return localRelevanceHeuristic(question, trimmed);
+  }
+}
+
+function localRelevanceHeuristic(question: string, transcript: string): AnswerRelevance {
+  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 3);
+  const qWords = new Set(normalize(question));
+  const aWords = normalize(transcript);
+  const wordCount = aWords.length;
+
+  if (wordCount < 3) {
+    return { score: 10, verdict: 'Off-topic', feedback: 'Answer is too short to meaningfully address the question.' };
+  }
+
+  // How much of the answer is just parroting words back from the question.
+  const overlapWithQuestion = aWords.filter(w => qWords.has(w)).length;
+  const echoRatio = overlapWithQuestion / wordCount;
+
+  // Length and lexical variety are weak but real proxies for a substantive,
+  // on-topic answer when no LLM is available to actually read it.
+  const uniqueRatio = new Set(aWords).size / wordCount;
+  const lengthScore = Math.min(100, wordCount * 4); // ~25 substantive words -> 100
+  const varietyScore = Math.round(uniqueRatio * 100);
+  let score = Math.round(lengthScore * 0.5 + varietyScore * 0.5);
+
+  // Mostly repeating the question back is a strong "didn't actually answer" signal.
+  if (echoRatio > 0.6) score = Math.min(score, 30);
+
+  score = Math.max(0, Math.min(100, score));
+  const verdict: AnswerRelevance['verdict'] = score >= 70 ? 'Relevant' : score >= 40 ? 'Partially Relevant' : 'Off-topic';
+  return {
+    score,
+    verdict,
+    feedback: `Local heuristic estimate (Gemini unavailable): ${wordCount} substantive words, ${varietyScore}% lexical variety.`,
+  };
+}
+
 function getMockResumeAnalysis(): ResumeAnalysisResult {
   return {
     atsScore: 82,

@@ -137,10 +137,11 @@ export default function VoiceAuth() {
 
       const landmarker = await getFaceLandmarker();
       let signature: number[] | null = null;
-      // Try several frames over a few seconds — gives the candidate time to
-      // face the camera, and tolerates a stray blink/no-face frame.
-      for (let attempt = 0; attempt < 8 && !signature; attempt++) {
-        await new Promise(r => setTimeout(r, 400));
+      // Try several frames over ~9 seconds — some webcams take a couple of
+      // seconds to autofocus/adjust exposure before a face is detectable,
+      // and this also tolerates a stray blink or momentary head turn.
+      for (let attempt = 0; attempt < 18 && !signature; attempt++) {
+        await new Promise(r => setTimeout(r, 500));
         if (video.readyState < 2) continue;
         const result = analyzeVideoFrame(landmarker, video, performance.now());
         if (result.faceCount === 1 && result.landmarks) {
@@ -155,6 +156,33 @@ export default function VoiceAuth() {
       return null;
     } finally {
       if (stream) stream.getTracks().forEach(t => t.stop());
+    }
+  };
+
+  // Lets the candidate retry the face snapshot on its own — e.g. after
+  // enrollment already succeeded but the capture failed — without
+  // re-recording their voice. Saves straight to the server since there's no
+  // enclosing verify-voice call to piggyback the signature onto.
+  const retryFaceCapture = async () => {
+    const signature = await captureFaceSignature();
+    if (!signature || !currentUser?.uid) {
+      if (!signature) toast.error("Still couldn't detect a clear, single face. Check lighting and camera position, then try again.");
+      return;
+    }
+    try {
+      const res = await fetch('/api/auth/enroll-face', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: currentUser.uid, face_signature: JSON.stringify(signature) }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast.success("Facial identity snapshot saved.");
+      } else {
+        toast.error(data.message || "Failed to save face snapshot.");
+      }
+    } catch (err: any) {
+      toast.error("Failed to save face snapshot: " + err.message);
     }
   };
 
@@ -433,8 +461,18 @@ export default function VoiceAuth() {
       <div className="absolute -z-10 top-[-200px] left-[-100px] w-[600px] h-[600px] bg-blue-600/10 rounded-full blur-[140px]" />
       <div className="absolute -z-10 bottom-[-200px] right-[-100px] w-[600px] h-[600px] bg-cyan-600/10 rounded-full blur-[140px]" />
 
-      {/* Source frames for the facial-identity snapshot (see captureFaceSignature) */}
-      <video ref={faceVideoRef} muted playsInline className="absolute w-px h-px opacity-0 pointer-events-none" />
+      {/* Source frames for the facial-identity snapshot (see captureFaceSignature).
+          Always mounted (so the ref is stable across capture attempts); made
+          visible via CSS only while actively capturing, so the candidate can
+          see themselves and position their face properly. */}
+      <video
+        ref={faceVideoRef}
+        muted
+        playsInline
+        className={faceCaptureStatus === 'capturing'
+          ? "fixed bottom-6 right-6 w-40 h-32 object-cover rounded-2xl border-2 border-cyan-400 shadow-2xl z-50 scale-x-[-1]"
+          : "absolute w-px h-px opacity-0 pointer-events-none"}
+      />
 
       <div className="max-w-6xl mx-auto space-y-8 relative z-10">
         {/* Header */}
@@ -509,20 +547,35 @@ export default function VoiceAuth() {
               </div>
 
               {/* Facial identity snapshot status */}
-              <div className="flex items-center justify-between p-3 rounded-2xl bg-white/2 border border-white/5">
-                <span className="text-xs font-bold text-slate-300 flex items-center gap-2">
-                  <ScanFace className="h-4 w-4 text-cyan-400" /> Facial Identity Snapshot
-                </span>
-                <Badge className={
-                  faceCaptureStatus === 'captured' ? "bg-green-500/10 text-green-400 border-green-500/20" :
-                  faceCaptureStatus === 'capturing' ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/20 animate-pulse" :
-                  faceCaptureStatus === 'failed' ? "bg-amber-500/10 text-amber-400 border-amber-500/20" :
-                  "bg-slate-500/10 text-slate-400 border-slate-500/20"
-                }>
-                  {faceCaptureStatus === 'captured' ? 'Captured' :
-                   faceCaptureStatus === 'capturing' ? 'Capturing...' :
-                   faceCaptureStatus === 'failed' ? 'Not Captured' : 'Idle'}
-                </Badge>
+              <div className="p-3 rounded-2xl bg-white/2 border border-white/5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-300 flex items-center gap-2">
+                    <ScanFace className="h-4 w-4 text-cyan-400" /> Facial Identity Snapshot
+                  </span>
+                  <Badge className={
+                    faceCaptureStatus === 'captured' ? "bg-green-500/10 text-green-400 border-green-500/20" :
+                    faceCaptureStatus === 'capturing' ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/20 animate-pulse" :
+                    faceCaptureStatus === 'failed' ? "bg-amber-500/10 text-amber-400 border-amber-500/20" :
+                    "bg-slate-500/10 text-slate-400 border-slate-500/20"
+                  }>
+                    {faceCaptureStatus === 'captured' ? 'Captured' :
+                     faceCaptureStatus === 'capturing' ? 'Capturing...' :
+                     faceCaptureStatus === 'failed' ? 'Not Captured' : 'Idle'}
+                  </Badge>
+                </div>
+                {faceCaptureStatus === 'capturing' && (
+                  <p className="text-[10px] text-cyan-400/70 italic">Look at your camera preview (bottom-right) — hold still for a few seconds.</p>
+                )}
+                {(faceCaptureStatus === 'failed' || faceCaptureStatus === 'captured') && (
+                  <Button
+                    onClick={retryFaceCapture}
+                    variant="outline"
+                    size="sm"
+                    className="w-full bg-white/5 border-white/10 hover:bg-cyan-500/10 text-slate-300 text-[10px] font-bold uppercase tracking-wider gap-2 h-8"
+                  >
+                    <RefreshCw className="h-3 w-3" /> {faceCaptureStatus === 'failed' ? 'Retry Capture' : 'Recapture'}
+                  </Button>
+                )}
               </div>
 
               {/* Phrase Card */}

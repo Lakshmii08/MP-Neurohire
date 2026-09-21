@@ -1,4 +1,4 @@
-import type { ResumeAnalysisResult, SpeechAnalysisResult } from './gemini';
+import type { ResumeAnalysisResult, SpeechAnalysisResult, AnswerRelevance } from './gemini';
 
 // ── Candidate ──────────────────────────────────────────────────────────────
 
@@ -84,6 +84,7 @@ export interface InterviewAnswer {
   question: string;
   transcript: string;
   speechAnalysis: SpeechAnalysisResult;
+  relevance: AnswerRelevance;
 }
 
 export interface InterviewSession {
@@ -120,18 +121,23 @@ export async function updateInterviewSession(sessionId: string, data: Partial<In
     // If completed, push the full result to the backend SQLite DB
     if (data.status === 'completed') {
       const session = activeSessions[sessionId];
-      
+
+      const avg = (nums: number[]) => nums.length ? Math.round(nums.reduce((a, b) => a + b, 0) / nums.length) : 0;
+
       const payload = {
         user_id: session.candidateId,
         session_id: sessionId,
-        question: session.questions[0] || '', // simplifying for the backend schema
-        answer: session.answers[0]?.transcript || '',
+        // Full per-question breakdown (questions/answers) so the report page
+        // shows every Q&A, not just the first — persisted as JSON since the
+        // interviews table's questions/answers columns are TEXT.
+        question: JSON.stringify(session.questions),
+        answer: JSON.stringify(session.answers),
         score: session.overallScore,
         feedback: "Session completed.",
         speech_metrics: {
-          confidence: session.speechScore,
-          fluency: session.answers[0]?.speechAnalysis.fluency || 0,
-          clarity: session.answers[0]?.speechAnalysis.clarity || 0,
+          confidence: avg(session.answers.map(a => a.speechAnalysis.confidence)),
+          fluency: avg(session.answers.map(a => a.speechAnalysis.fluency)),
+          clarity: avg(session.answers.map(a => a.speechAnalysis.clarity)),
         },
         voice_score: session.voiceScore,
         proctor_score: session.proctoringScore,

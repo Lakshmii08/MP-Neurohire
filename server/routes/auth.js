@@ -280,6 +280,39 @@ router.post('/verify-voice-match', upload.single('voice_sample'), async (req, re
   }
 });
 
+// Standalone (re-)capture endpoint — lets the candidate retry just the face
+// snapshot without re-recording their voice sample, e.g. if the first
+// attempt at signup failed to get a clean single-face frame.
+router.post('/enroll-face', (req, res) => {
+  const { id, face_signature } = req.body;
+  if (!id || !face_signature) {
+    return res.status(400).json({ success: false, message: 'id and face_signature are required.' });
+  }
+
+  let faceSignatureStr;
+  try {
+    const parsed = JSON.parse(face_signature);
+    if (!Array.isArray(parsed) || !parsed.every(n => typeof n === 'number')) {
+      throw new Error('not a numeric array');
+    }
+    faceSignatureStr = JSON.stringify(parsed);
+  } catch {
+    return res.status(400).json({ success: false, message: 'face_signature must be a JSON array of numbers.' });
+  }
+
+  try {
+    const existing = db.prepare('SELECT id FROM voice_auth WHERE user_id = ?').get(id);
+    if (existing) {
+      db.prepare('UPDATE voice_auth SET face_signature = ? WHERE user_id = ?').run(faceSignatureStr, id);
+    } else {
+      db.prepare('INSERT INTO voice_auth (user_id, face_signature) VALUES (?, ?)').run(id, faceSignatureStr);
+    }
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Returns the enrolled facial-geometry signature (see src/lib/faceIdentity.ts)
 // so the interview screen can fetch it once at session start and run all
 // per-frame identity comparisons client-side, rather than posting a frame's
