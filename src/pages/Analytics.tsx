@@ -1,41 +1,33 @@
-import { motion } from "motion/react";
-import { 
-  BarChart3, 
-  TrendingUp, 
-  Users, 
-  ShieldCheck, 
-  Filter, 
-  Download, 
-  Calendar, 
-  Layers, 
-  Search, 
-  ArrowUpRight, 
-  Zap, 
-  LayoutDashboard,
-  Brain,
-  Video,
-  FileText
+import {
+  TrendingUp,
+  Users,
+  ShieldCheck,
+  Filter,
+  Download,
+  Zap,
+  Brain
 } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { 
-  ResponsiveContainer, 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  Tooltip, 
-  LineChart, 
-  Line, 
-  CartesianGrid, 
-  ScatterChart, 
-  Scatter, 
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  LineChart,
+  Line,
+  CartesianGrid,
+  ScatterChart,
+  Scatter,
   ZAxis,
   Legend,
   Cell
 } from "recharts";
-import { Link } from "react-router-dom";
+import RecruiterSidebar from "@/components/RecruiterSidebar";
+import { useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 
 const resumeVsSpeechData = [
   { x: 85, y: 72, z: 200, name: 'Anay Hire' },
@@ -67,37 +59,23 @@ const performanceData = [
 ];
 
 export default function Analytics() {
+  const { currentUser, loading: authLoading } = useAuth();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!currentUser || (currentUser.role !== 'recruiter' && currentUser.role !== 'admin')) {
+      navigate('/recruiter/auth');
+    }
+  }, [currentUser, authLoading, navigate]);
+
   return (
     <div className="min-h-screen bg-[#020617] text-slate-100 flex overflow-hidden selection:bg-cyan-500/30 relative">
       {/* Background Glows */}
       <div className="absolute -z-10 top-[-200px] left-[-100px] w-[500px] h-[500px] bg-blue-600/10 rounded-full blur-[120px]"></div>
       <div className="absolute -z-10 bottom-[-200px] right-[-100px] w-[500px] h-[500px] bg-purple-600/10 rounded-full blur-[120px]"></div>
 
-      {/* Recruiter Sidebar */}
-      <aside className="w-20 flex flex-col items-center py-8 gap-10 bg-slate-950/50 border-r border-white/5 backdrop-blur-xl shrink-0">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 via-purple-600 to-cyan-400 flex items-center justify-center shadow-lg shadow-blue-500/20">
-          <div className="w-5 h-5 border-2 border-white rounded-full flex items-center justify-center">
-            <div className="w-1 h-1 bg-white rounded-full"></div>
-          </div>
-        </div>
-        <nav className="flex flex-col gap-6">
-           <Link to="/recruiter" className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors">
-              <LayoutDashboard className="w-6 h-6" />
-           </Link>
-           <Link to="/recruiter/proctoring" className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors">
-              <Video className="w-6 h-6" />
-           </Link>
-           <div className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors cursor-pointer">
-              <FileText className="w-6 h-6" />
-           </div>
-           <div className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors cursor-pointer">
-              <Users className="w-6 h-6" />
-           </div>
-           <Link to="/recruiter/analytics" className="p-3 rounded-xl bg-white/10 text-cyan-400 shadow-inner group transition-all">
-              <BarChart3 className="w-6 h-6" />
-           </Link>
-        </nav>
-      </aside>
+      <RecruiterSidebar />
 
       {/* Main Analytics Content */}
       <main className="flex-1 overflow-y-auto p-8 space-y-12">

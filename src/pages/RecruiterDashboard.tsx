@@ -1,33 +1,34 @@
 import { useState, useEffect } from "react";
-import { auth, db } from "@/lib/firebase";
-import { onAuthStateChanged, signOut } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
 import { toast } from "sonner";
 import { useNavigate, Link } from "react-router-dom";
-import { motion } from "motion/react";
 import {
-  Users, Video, FileText, AlertCircle, Search, Bell,
-  Target, TrendingUp, UserCheck, UserMinus, Settings,
-  LayoutDashboard, BarChart3, ShieldCheck, Plus, LogOut, Building, Briefcase
+  Users, FileText, AlertCircle, Search,
+  TrendingUp, UserCheck,
+  ShieldCheck, Building
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, PieChart, Pie, Cell } from "recharts";
 import { getAllCompletedInterviews, type InterviewSession } from "@/lib/firestore";
 import { useAuth } from "@/contexts/AuthContext";
+import RecruiterSidebar from "@/components/RecruiterSidebar";
 
 export default function RecruiterDashboard() {
   const [loading, setLoading] = useState(true);
   const [recruiterData, setRecruiterData] = useState<any>(null);
   const [interviews, setInterviews] = useState<InterviewSession[]>([]);
   const [loadingInterviews, setLoadingInterviews] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
   const navigate = useNavigate();
 
-  const { currentUser, setCurrentUser } = useAuth();
-  
+  const { currentUser, loading: authLoading } = useAuth();
+
   useEffect(() => {
+    // Wait for AuthContext to finish restoring the session from
+    // localStorage before judging currentUser — otherwise a hard reload
+    // sees a momentary null and bounces straight to the login page.
+    if (authLoading) return;
     if (!currentUser || (currentUser.role !== 'recruiter' && currentUser.role !== 'admin')) {
       navigate('/recruiter/auth');
       return;
@@ -56,7 +57,7 @@ export default function RecruiterDashboard() {
       }
     };
     fetchRecruiterData();
-  }, [currentUser, navigate]);
+  }, [currentUser, authLoading, navigate]);
 
   useEffect(() => {
     if (!loading) {
@@ -97,12 +98,6 @@ export default function RecruiterDashboard() {
     }
   }, [loading]);
 
-  const handleLogout = async () => {
-    setCurrentUser(null);
-    toast.success("Logged out successfully");
-    navigate('/recruiter/auth');
-  };
-
   if (loading) {
     return (
       <div className="h-screen bg-[#020617] flex items-center justify-center">
@@ -112,6 +107,12 @@ export default function RecruiterDashboard() {
       </div>
     );
   }
+
+  const filteredInterviews = searchQuery.trim()
+    ? interviews.filter(i =>
+        i.candidateName.toLowerCase().includes(searchQuery.trim().toLowerCase()) ||
+        i.role.toLowerCase().includes(searchQuery.trim().toLowerCase()))
+    : interviews;
 
   // Compute stats from real interviews
   const totalCandidates = interviews.length;
@@ -162,48 +163,7 @@ export default function RecruiterDashboard() {
       <div className="absolute -z-10 top-[-200px] left-[-100px] w-[500px] h-[500px] bg-blue-600/10 rounded-full blur-[120px]" />
       <div className="absolute -z-10 bottom-[-200px] right-[-100px] w-[500px] h-[500px] bg-purple-600/10 rounded-full blur-[120px]" />
 
-      {/* Sidebar */}
-      <aside className="w-20 flex flex-col items-center py-8 gap-10 bg-slate-950/50 border-r border-white/5 backdrop-blur-xl shrink-0">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 via-purple-600 to-cyan-400 flex items-center justify-center shadow-lg shadow-blue-500/20">
-          <div className="w-5 h-5 border-2 border-white rounded-full flex items-center justify-center">
-            <div className="w-1 h-1 bg-white rounded-full" />
-          </div>
-        </div>
-        <nav className="flex flex-col gap-6">
-          <Link to="/recruiter" className="p-3 rounded-xl bg-white/10 text-cyan-400 shadow-inner transition-all" title="Dashboard">
-            <LayoutDashboard className="w-6 h-6" />
-          </Link>
-          <Link to="/recruiter/proctoring" className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors" title="Proctoring">
-            <Video className="w-6 h-6" />
-          </Link>
-          <Link to="/recruiter/jobs" className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors" title="Job Postings">
-            <Briefcase className="w-6 h-6" />
-          </Link>
-          <div className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors cursor-pointer" title="Reports">
-            <FileText className="w-6 h-6" />
-          </div>
-          <div className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors cursor-pointer" title="Candidates">
-            <Users className="w-6 h-6" />
-          </div>
-          <Link to="/recruiter/analytics" className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors" title="Analytics">
-            <BarChart3 className="w-6 h-6" />
-          </Link>
-        </nav>
-        <div className="mt-auto flex flex-col gap-4">
-          <div className="p-3 rounded-xl text-slate-500 hover:text-red-400 transition-colors cursor-pointer" onClick={handleLogout} title="Logout">
-            <LogOut className="w-6 h-6" />
-          </div>
-          <div className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors cursor-pointer" title="Settings">
-            <Settings className="w-6 h-6" />
-          </div>
-          <div className="w-10 h-10 rounded-full border border-white/20 bg-slate-800 p-0.5">
-            <Avatar className="w-full h-full">
-              <AvatarImage src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${recruiterData?.email}`} />
-              <AvatarFallback>RC</AvatarFallback>
-            </Avatar>
-          </div>
-        </div>
-      </aside>
+      <RecruiterSidebar recruiterEmail={recruiterData?.email} />
 
       {/* Main */}
       <main className="flex-1 overflow-y-auto flex flex-col">
@@ -231,14 +191,15 @@ export default function RecruiterDashboard() {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-6">
-            <div className="relative">
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
-              <input type="text" placeholder="Search candidates..." className="bg-white/5 border border-white/10 rounded-full py-2 px-10 text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500/50 w-64 text-white" />
-            </div>
-            <div className="relative p-2 rounded-lg bg-white/5 border border-white/10 cursor-pointer">
-              <Bell className="h-5 w-5 text-slate-300" />
-            </div>
+          <div className="relative">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Search candidates by name or role..."
+              className="bg-white/5 border border-white/10 rounded-full py-2 px-10 text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500/50 w-72 text-white"
+            />
           </div>
         </header>
 
@@ -307,8 +268,8 @@ export default function RecruiterDashboard() {
 
             <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-md flex flex-col">
               <div className="mb-4">
-                <h3 className="font-semibold text-lg leading-none">Fraud & Identity</h3>
-                <p className="text-slate-500 text-xs uppercase tracking-widest mt-1">NeuroVoice™ Result</p>
+                <h3 className="font-semibold text-lg leading-none">Integrity Risk Breakdown</h3>
+                <p className="text-slate-500 text-xs uppercase tracking-widest mt-1">Based on proctoring signals</p>
               </div>
               <div className="flex flex-col items-center flex-1">
                 <div className="h-64 w-full">
@@ -344,7 +305,9 @@ export default function RecruiterDashboard() {
           <div className="bg-white/5 border border-white/10 rounded-3xl overflow-hidden backdrop-blur-md flex flex-col">
             <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between">
               <h3 className="font-semibold text-lg">Top Ranking Candidates</h3>
-              <span className="text-xs text-slate-500">{interviews.length} total interviews</span>
+              <span className="text-xs text-slate-500">
+                {searchQuery ? `${filteredInterviews.length} of ${interviews.length}` : `${interviews.length} total`} interviews
+              </span>
             </div>
             {loadingInterviews ? (
               <div className="p-12 text-center text-slate-500">Loading candidates...</div>
@@ -352,6 +315,10 @@ export default function RecruiterDashboard() {
               <div className="p-12 text-center space-y-2">
                 <p className="text-slate-500">No completed interviews yet.</p>
                 <p className="text-slate-600 text-sm">Candidates will appear here after completing the full interview flow.</p>
+              </div>
+            ) : filteredInterviews.length === 0 ? (
+              <div className="p-12 text-center space-y-2">
+                <p className="text-slate-500">No candidates match "{searchQuery}".</p>
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -366,7 +333,7 @@ export default function RecruiterDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {interviews
+                    {filteredInterviews
                       .sort((a, b) => b.overallScore - a.overallScore)
                       .slice(0, 10)
                       .map((c, i) => {

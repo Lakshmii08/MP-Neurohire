@@ -3,13 +3,13 @@ import { useNavigate, Link } from "react-router-dom";
 import { toast } from "sonner";
 import {
   Briefcase, Plus, MapPin, DollarSign, Users, Building2,
-  LayoutDashboard, Video, FileText, BarChart3, LogOut, Settings, X, CheckCircle2
+  X, CheckCircle2, ArrowRight
 } from "lucide-react";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/contexts/AuthContext";
+import RecruiterSidebar from "@/components/RecruiterSidebar";
 
 interface Job {
   id: number;
@@ -37,7 +37,7 @@ const emptyForm = {
 
 export default function RecruiterJobs() {
   const navigate = useNavigate();
-  const { currentUser } = useAuth();
+  const { currentUser, loading: authLoading } = useAuth();
   const [recruiterData, setRecruiterData] = useState<any>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
@@ -46,6 +46,7 @@ export default function RecruiterJobs() {
   const [form, setForm] = useState(emptyForm);
 
   useEffect(() => {
+    if (authLoading) return;
     if (!currentUser || (currentUser.role !== 'recruiter' && currentUser.role !== 'admin')) {
       navigate('/recruiter/auth');
       return;
@@ -55,7 +56,7 @@ export default function RecruiterJobs() {
       .then(data => { if (data.success) setRecruiterData(data.recruiter); })
       .catch(() => {});
     fetchJobs();
-  }, [currentUser, navigate]);
+  }, [currentUser, authLoading, navigate]);
 
   const fetchJobs = () => {
     setLoading(true);
@@ -139,10 +140,6 @@ export default function RecruiterJobs() {
     }
   };
 
-  const handleLogout = () => {
-    navigate('/recruiter/auth');
-  };
-
   if (loading && jobs.length === 0) {
     return (
       <div className="h-screen bg-[#020617] flex items-center justify-center">
@@ -159,44 +156,7 @@ export default function RecruiterJobs() {
       <div className="absolute -z-10 bottom-[-200px] right-[-100px] w-[500px] h-[500px] bg-purple-600/10 rounded-full blur-[120px]" />
 
       {/* Sidebar */}
-      <aside className="w-20 flex flex-col items-center py-8 gap-10 bg-slate-950/50 border-r border-white/5 backdrop-blur-xl shrink-0">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 via-purple-600 to-cyan-400 flex items-center justify-center shadow-lg shadow-blue-500/20">
-          <div className="w-5 h-5 border-2 border-white rounded-full flex items-center justify-center">
-            <div className="w-1 h-1 bg-white rounded-full" />
-          </div>
-        </div>
-        <nav className="flex flex-col gap-6">
-          <Link to="/recruiter" className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors" title="Dashboard">
-            <LayoutDashboard className="w-6 h-6" />
-          </Link>
-          <Link to="/recruiter/proctoring" className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors" title="Proctoring">
-            <Video className="w-6 h-6" />
-          </Link>
-          <Link to="/recruiter/jobs" className="p-3 rounded-xl bg-white/10 text-cyan-400 shadow-inner transition-all" title="Job Postings">
-            <Briefcase className="w-6 h-6" />
-          </Link>
-          <div className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors cursor-pointer" title="Reports">
-            <FileText className="w-6 h-6" />
-          </div>
-          <Link to="/recruiter/analytics" className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors" title="Analytics">
-            <BarChart3 className="w-6 h-6" />
-          </Link>
-        </nav>
-        <div className="mt-auto flex flex-col gap-4">
-          <div className="p-3 rounded-xl text-slate-500 hover:text-red-400 transition-colors cursor-pointer" onClick={handleLogout} title="Logout">
-            <LogOut className="w-6 h-6" />
-          </div>
-          <div className="p-3 rounded-xl text-slate-500 hover:text-white transition-colors cursor-pointer" title="Settings">
-            <Settings className="w-6 h-6" />
-          </div>
-          <div className="w-10 h-10 rounded-full border border-white/20 bg-slate-800 p-0.5">
-            <Avatar className="w-full h-full">
-              <AvatarImage src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${recruiterData?.email}`} />
-              <AvatarFallback>RC</AvatarFallback>
-            </Avatar>
-          </div>
-        </div>
-      </aside>
+      <RecruiterSidebar recruiterEmail={recruiterData?.email} />
 
       {/* Main */}
       <main className="flex-1 overflow-y-auto flex flex-col">
@@ -317,7 +277,12 @@ export default function RecruiterJobs() {
                           <span className="flex items-center gap-1"><Building2 className="h-3 w-3" /> {job.company}</span>
                           <span className="flex items-center gap-1"><MapPin className="h-3 w-3" /> {job.location}</span>
                           <span className="flex items-center gap-1"><DollarSign className="h-3 w-3" /> {job.salary}</span>
-                          <span className="flex items-center gap-1"><Users className="h-3 w-3" /> {job.applicants} applicants</span>
+                          <Link
+                            to={`/recruiter/jobs/${job.id}/applicants`}
+                            className="flex items-center gap-1 text-cyan-400 hover:text-cyan-300 hover:underline transition-colors"
+                          >
+                            <Users className="h-3 w-3" /> {job.applicants} applicant{job.applicants === 1 ? '' : 's'}
+                          </Link>
                         </div>
                         {skills.length > 0 && (
                           <div className="flex flex-wrap gap-1.5 pt-1">
@@ -329,18 +294,28 @@ export default function RecruiterJobs() {
                           </div>
                         )}
                       </div>
-                      <Button
-                        type="button"
-                        onClick={() => toggleStatus(job)}
-                        className={`shrink-0 h-10 rounded-xl text-xs font-bold uppercase tracking-widest px-4 flex items-center gap-2 ${
-                          job.status === 'Open'
-                            ? 'bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300'
-                            : 'bg-blue-600 hover:bg-blue-500 text-white'
-                        }`}
-                      >
-                        {job.status === 'Open' ? <X className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-                        {job.status === 'Open' ? 'Close Role' : 'Reopen Role'}
-                      </Button>
+                      <div className="flex flex-col gap-2 shrink-0">
+                        <Link to={`/recruiter/jobs/${job.id}/applicants`}>
+                          <Button
+                            type="button"
+                            className="w-full h-10 rounded-xl text-xs font-bold uppercase tracking-widest px-4 flex items-center gap-2 bg-cyan-600/10 hover:bg-cyan-600/20 border border-cyan-500/20 text-cyan-300"
+                          >
+                            View Applicants <ArrowRight className="h-3.5 w-3.5" />
+                          </Button>
+                        </Link>
+                        <Button
+                          type="button"
+                          onClick={() => toggleStatus(job)}
+                          className={`h-10 rounded-xl text-xs font-bold uppercase tracking-widest px-4 flex items-center gap-2 ${
+                            job.status === 'Open'
+                              ? 'bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300'
+                              : 'bg-blue-600 hover:bg-blue-500 text-white'
+                          }`}
+                        >
+                          {job.status === 'Open' ? <X className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                          {job.status === 'Open' ? 'Close Role' : 'Reopen Role'}
+                        </Button>
+                      </div>
                     </div>
                   );
                 })}
